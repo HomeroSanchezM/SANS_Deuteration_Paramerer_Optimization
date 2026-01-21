@@ -184,23 +184,89 @@ class Chromosome:
         }
 
 
+# ============================================================================
+#                       CLASSE POPULATION GENERATOR
+# ============================================================================
+
+class PopulationGenerator:
+    """
+    Générateur de populations pour l'algorithme génétique.
+
+    Gère la création de populations initiales et l'évolution de populations
+    existantes via sélection, croisement et mutation.
+
+    Attributes:
+        aa_list: Liste des acides aminés
+        modifiable: Restrictions de deutération
+        population_size: Taille de la population
+        d2o_initial: Pourcentage initial de D2O
+        elitism: Nombre d'élites préservés entre générations
+    """
+    def __init__(self,
+                 aa_list: List[AminoAcid],
+                 modifiable: List[bool],
+                 population_size: int = 100,
+                 d2o_initial: int = 50,
+                 elitism: int = 2,
+                 d2o_variation_rate: int = 5):
+        """Initialise le générateur de population."""
+        self.aa_list = aa_list
+        self.modifiable = modifiable
+        self.population_size = population_size
+        self.d2o_initial = d2o_initial
+        self.elitism = elitism
+        self.d2o_variation_rate = d2o_variation_rate
+
+        # Validation
+        assert population_size > 0, "population_size doit être > 0"
+        assert 0 <= d2o_initial <= 100, "d2o_initial doit être entre 0 et 100"
+        assert elitism >= 0, "elitism doit être >= 0"
+        assert elitism < population_size, "elitism doit être < population_size"
+        assert 0 <= d2o_variation_rate <= 100, "d20_vatiation_rate doit être entre 0 et 100"
+
+    def generate_initial_population(self) -> List[Chromosome]:
+        """
+        Génère la population initiale (génération 0).
+
+        Crée une population de chromosomes avec deutération aléatoire
+        et pourcentage de D2O variant autour d'un D2O initial.
+
+        Returns:
+            Liste de chromosomes initialisés aléatoirement
+        """
+        population = []
+
+        for _ in range(self.population_size):
+            # Créer un chromosome
+            chrom = Chromosome(self.aa_list, self.modifiable, self.d2o_initial)
+
+            # Initialiser aléatoirement la deutération
+            chrom.randomize_deuteration()
+
+            # Initialiser les variation de D2O autour de d20_initial
+            chrom.modify_d20(self.d2o_variation_rate)
+
+            population.append(chrom)
+
+        return population
+
 
 
 # Exemple d'utilisation
 if __name__ == "__main__":
 
     # Créer et exécuter l'algorithme génétique
-    ga = GeneticAlgorithm(
-        aa_list=AMINO_ACIDS,
-        modifiable=restrictions,
-        population_size=10,
-        mutation_rate=0.15,
-        crossover_rate=0.8,
-        elitism=3
+    generator = PopulationGenerator(
+        aa_list= AMINO_ACIDS,
+        modifiable= restrictions,
+        population_size= 10,
+        d2o_initial=50,
+        elitism= 2,
+        d2o_variation_rate= 5,
     )
 
-    ga.initialize_population()
-    for chromosome in ga.population:
-        print(chromosome)
+    #Génération et affichage de la population initiale
+    pop_0 = generator.generate_initial_population()
 
-    #best = ga.run(max_generations=200)
+    for chromosome in pop_0:
+        print(chromosome)
