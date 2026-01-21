@@ -5,9 +5,17 @@ from typing import List, Tuple
 from dataclasses import dataclass
 
 
+
 @dataclass
 class AminoAcid:
-    """Représente un acide aminé"""
+    """
+    Représente un acide aminé avec ses codes nomenclature.
+
+    Attributes:
+        name (str): Nom complet de l'acide aminé (ex: "Alanine")
+        code_3 (str): Code à 3 lettres (ex: "Ala")
+        code_1 (str): Code à 1 lettre (ex: "A")
+    """
     name: str
     code_3: str
     code_1: str
@@ -63,15 +71,34 @@ restrictions = [
 
 
 class Chromosome:
-    """Représente un chromosome dans l'algorithme génétique"""
+    """
+    Représente un chromosome dans l'algorithme génétique
 
-    def __init__(self, aa_list: List[AminoAcid], modifiable: List[bool] = None):
+    Un chromosome encode:
+        - Quels acides aminés sont deutérés (vecteur booléen)
+        - Le pourcentage de D2O utilisé (int entre 0 et 100)
+        - Le score de fitness (calculé à partir des données SANS)
+
+    Attributes:
+        aa_list (List[AminoAcid]): Liste des acides aminés
+        modifiable (List[bool]): Restrictions de deutération par AA
+        deuteration (List[bool]): Vecteur de deutération (True = deutéré)
+        d2o (int): Pourcentage de D2O (0-100)
+        fitness (float): Score de fitness du chromosome
+
+    """
+
+    def __init__(self,
+                 aa_list: List[AminoAcid],
+                 modifiable: List[bool],
+                 d2o_initial: int = 50):
         """
         Initialise un chromosome
 
         Args:
             aa_list: Liste des acides aminés
             modifiable: Liste indiquant quels AA peuvent être modifiés
+            d2o_initial: Pourcentage initial de D2O (défaut: 50)
         """
         self.aa_list = aa_list
         self.n_aa = len(aa_list)
@@ -80,7 +107,7 @@ class Chromosome:
         if modifiable is None:
             self.modifiable = [True] * self.n_aa
         else:
-            assert len(modifiable) == self.n_aa, "modifiable doit avoir la même taille que aa_list"
+            assert len(modifiable) == self.n_aa, "modifiable doit avoir la même taille que aa_list, il doit avoir {self.n_aa} éléments"
             self.modifiable = modifiable
 
         # Vecteur de deutération (True = deutéré, False = non deutéré)
@@ -89,34 +116,45 @@ class Chromosome:
         # Fitness du chromosome
         self.fitness = 0.0
 
-        self.d2o = int(50)
+        self.d2o = self._validate_d2o(d2o_initial)
 
-    def randomize(self):
+    @staticmethod
+    def _validate_d2o(value: int) -> int:
+        """Valide les borne de D2O entre 0 et 100"""
+        return max(0, min(int(value), 100))
+
+    def randomize_deuteration(self):
         """
         Initialise aléatoirement le vecteur de deutération (respectant les restrictions)
-        Initialise le pourcentage de d2o avec des variation entre -5 et +5
         """
         for i in range(self.n_aa):
             if self.modifiable[i]:
                 self.deuteration[i] = random.choice([True, False])
             else:
                 self.deuteration[i] = False
-        if self.d2o > 5 and self.d2o < 95 :
-            self.d2o += random.choice([-5, -4, -3 ,-2 , -1 , 0, 1, 2 , 3 , 4 , 5])
+
+    def modify_d20(self, variation_rate: int):
+        """
+        Permet une variation aleatoire du % de D2O
+        Args:
+             variation_rate: Amplitude de variation possible (5 correspond à ±5%)
+        """
+        variation = random.randint(-variation_rate, variation_rate)
+        self.d2o = self._validate_d2o(self.d2o + variation)
 
 
     def get_deuteration_count(self) -> int:
         """Compte le nombre d'AA deutérés"""
         return sum(self.deuteration)
 
-    def copy(self):
+    def copy(self) -> 'Chromosome':
         """Crée une copie du chromosome"""
-        new_chrom = Chromosome(self.aa_list, self.modifiable)
+        new_chrom = Chromosome(self.aa_list, self.modifiable, self.d2o)
         new_chrom.deuteration = self.deuteration.copy()
         new_chrom.fitness = self.fitness
         return new_chrom
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Représentation textuelle du chromosome"""
         result = []
         for i, aa in enumerate(self.aa_list):
@@ -124,7 +162,7 @@ class Chromosome:
                 result.append(f"{aa.code_3}(D)")
             else:
                 result.append(f"{aa.code_3}(H)")
-        return " | ".join(result) + " " + str(self.d2o)
+        return " | ".join(result) + f" | D2O={self.d2o}% | fitness={self.fitness}"
 
 
 
