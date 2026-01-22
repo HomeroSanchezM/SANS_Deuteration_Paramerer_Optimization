@@ -1,3 +1,36 @@
+"""
+Module de génération de population pour l'optimisation de deutération
+=====================================================================
+
+Ce module gère la création et l'évolution de populations de chromosomes
+représentant des configurations de deutération d'acides aminés.
+
+Architecture:
+    - AminoAcid: Dataclass représentant un acide aminé
+    - Chromosome: Classe représentant une solution (configuration de deutération)
+    - PopulationGenerator: Classe principale gérant la génération/évolution
+
+Usage:
+    # Première génération
+    generator = PopulationGenerator(
+        aa_list=AMINO_ACIDS,
+        modifiable=restrictions,
+        population_size=100,
+        d2o_initial=50,
+        elitism=3
+    )
+    population = generator.generate_initial_population()
+
+    # Générations suivantes
+    new_population = generator.generate_next_generation(
+        previous_population=population,
+        fitness_scores=[0.8, 0.7, ...],
+        mutation_rate=0.15,
+        crossover_rate=0.8,
+        d2o_variation_rate=5
+    )
+"""
+
 import random
 import numpy as np
 from typing import List, Tuple
@@ -237,8 +270,8 @@ class PopulationGenerator:
 
             # Initialiser les variation de D2O autour de d20_initial
             chrom.modify_d2o(self.d2o_variation_rate)
-
-            population.append(chrom)
+            if self._unique_check(chrom, population):
+                population.append(chrom)
 
         return population
     def generate_next_generation(self,
@@ -306,11 +339,24 @@ class PopulationGenerator:
             child2.modify_d2o(d2o_variation_rate)
 
             # Ajout à la nouvelle population
-            new_population.append(child1)
-            if len(new_population) < self.population_size:
-                new_population.append(child2)
+            if self._unique_check(child1, new_population):
+                new_population.append(child1)
+                if len(new_population) < self.population_size and self._unique_check(child2, new_population):
+                    new_population.append(child2)
 
         return new_population
+
+    def _unique_check(self,new_chromosome: Chromosome,subpopulation: List[Chromosome]) -> bool:
+        """
+        Vérification que le chromosome qui va etre ajouter a la pop n'y est pas déjà
+        :param new_chromosome: chromosome qu'on veut ajouter
+        :param subpopulation: population avec des chromosomes uniques
+        :return: False si un chromosome avec les memes motif de deuterisation et do est trouvée, True sinon
+        """
+        for chromosome in subpopulation:
+            if chromosome.deuteration == new_chromosome.deuteration and chromosome.fitness == new_chromosome.fitness:
+                return False
+        return True
 
     def _probability_selection(self, population: List[Chromosome]) -> Tuple[Chromosome, Chromosome]:
         """
