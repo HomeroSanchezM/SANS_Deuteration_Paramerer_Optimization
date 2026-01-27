@@ -75,12 +75,12 @@ Exemples d'utilisation:
     )
 
     # Paramètres D2O
-    parser.add_argument(
-        '-d', '--d2o_initial',
-        type=int,
-        default=50,
-        help='Pourcentage initial de D2O (0-100). Utilisé pour la génération 0. Défaut: 50'
-    )
+    #parser.add_argument(
+    #    '-d', '--d2o_initial',
+    #    type=int,
+    #    default=50,
+    #    help='Pourcentage initial de D2O (0-100). Utilisé pour la génération 0. Défaut: 50'
+    #)
 
     parser.add_argument(
         '-v', '--d2o_variation_rate',
@@ -127,9 +127,6 @@ Exemples d'utilisation:
 
     if args.population_size % 3 != 0:
         parser.error(f"population_size doit être un multiple de 3 (actuellement: {args.population_size})")
-
-    if not (0 <= args.d2o_initial <= 100):
-        parser.error("d2o_initial doit être entre 0 et 100")
 
     if args.elitism < 0:
         parser.error("elitism doit être >= 0")
@@ -244,15 +241,13 @@ class Chromosome:
 
     def __init__(self,
                  aa_list: List[AminoAcid],
-                 modifiable: List[bool],
-                 d2o_initial: int = 50):
+                 modifiable: List[bool]):
         """
         Initialise un chromosome
 
         Args:
             aa_list: Liste des acides aminés
             modifiable: Liste indiquant quels AA peuvent être modifiés
-            d2o_initial: Pourcentage initial de D2O (défaut: 50)
         """
         self.aa_list = aa_list
         self.n_aa = len(aa_list)
@@ -270,12 +265,7 @@ class Chromosome:
         # Fitness du chromosome
         self.fitness = 0.0
 
-        self.d2o = self._validate_d2o(d2o_initial)
-
-    @staticmethod
-    def _validate_d2o(value: int) -> int:
-        """Valide les borne de D2O entre 0 et 100"""
-        return max(0, min(int(value), 100))
+        self.d2o = 0
 
     def randomize_deuteration(self):
         """
@@ -289,9 +279,9 @@ class Chromosome:
 
     def randomize_d2o(self):
         """
-        Génère un pourcentage de D2O aléatoire entre 0 et 100 (distribution uniforme)
+        Génère un pourcentage de D2O aléatoire entre 0 et 100 (distribution entiere)
         """
-        self.d2o = random.uniform(0, 100)
+        self.d2o = random.randint(0, 100)
 
     def modify_d2o(self, variation_rate: int):
         """
@@ -300,8 +290,12 @@ class Chromosome:
              variation_rate: Amplitude de variation possible (5 correspond à ±5%)
         """
         variation = random.randint(-variation_rate, variation_rate)
-        self.d2o = self._validate_d2o(self.d2o + variation)
-
+        if 0 < self.d2o + variation < 100:
+            self.d2o = self.d2o + variation
+        elif 0 > self.d2o + variation :
+            self.d2o = 0
+        elif 100 < self.d2o + variation :
+            self.d2o = 100
 
     def get_deuteration_count(self) -> int:
         """Compte le nombre d'AA deutérés"""
@@ -309,8 +303,9 @@ class Chromosome:
 
     def copy(self) -> 'Chromosome':
         """Crée une copie du chromosome"""
-        new_chrom = Chromosome(self.aa_list, self.modifiable, self.d2o)
+        new_chrom = Chromosome(self.aa_list, self.modifiable)
         new_chrom.deuteration = self.deuteration.copy()
+        new_chrom.d2o = self.d2o
         new_chrom.fitness = self.fitness
         return new_chrom
 
@@ -322,7 +317,7 @@ class Chromosome:
                 result.append(f"{aa.code_3}(D)")
             else:
                 result.append(f"{aa.code_3}(H)")
-        return " | ".join(result) + f" | D2O={self.d2o:.2f}% | fitness={self.fitness}"
+        return " | ".join(result) + f" | D2O={self.d2o}% | fitness={self.fitness:.2f}"
 
     def to_dict(self) -> dict:
         """Convertit le chromosome en dictionnaire pour sérialisation."""
@@ -355,14 +350,14 @@ class PopulationGenerator:
                  aa_list: List[AminoAcid],
                  modifiable: List[bool],
                  population_size: int = 100,
-                 d2o_initial: int = 50,
+                 #d2o_initial: int = 50,
                  elitism: int = 2,
                  d2o_variation_rate: int = 5):
         """Initialise le générateur de population."""
         self.aa_list = aa_list
         self.modifiable = modifiable
         self.population_size = population_size
-        self.d2o_initial = d2o_initial
+        #self.d2o_initial = d2o_initial
         self.elitism = elitism
         self.d2o_variation_rate = d2o_variation_rate
 
@@ -370,7 +365,7 @@ class PopulationGenerator:
         assert population_size % 3 == 0, f"population_size DOIT être un multiple de 3 (actuellement: {population_size})"
 
         assert population_size > 0, "population_size doit être > 0"
-        assert 0 <= d2o_initial <= 100, "d2o_initial doit être entre 0 et 100"
+        #assert 0 <= d2o_initial <= 100, "d2o_initial doit être entre 0 et 100"
         assert elitism >= 0, "elitism doit être >= 0"
         assert elitism <= population_size // 3, f"elitism doit être ≤ population_size/3 (max: {population_size // 3})"
         assert d2o_variation_rate >= 0, "d2o_variation_rate doit être >= 0"
@@ -380,7 +375,7 @@ class PopulationGenerator:
         Génère la population initiale (génération 0).
 
         Crée une population de chromosomes avec deutération aléatoire
-        et pourcentage de D2O variant autour d'un D2O initial.
+        et pourcentage de D2O aleatoire.
 
         Returns:
             Liste de chromosomes initialisés aléatoirement
@@ -389,20 +384,18 @@ class PopulationGenerator:
 
         while len(population) < self.population_size:
             # Créer un chromosome
-            chrom = Chromosome(self.aa_list, self.modifiable, self.d2o_initial)
+            chrom = Chromosome(self.aa_list, self.modifiable)
 
-            # Initialiser aléatoirement la deutération
+            # Initialiser aléatoirement le %D2O et la deutération
+            chrom.randomize_d2o()
             chrom.randomize_deuteration()
 
-            # Initialiser les variation de D2O autour de d20_initial
-            chrom.modify_d2o(self.d2o_variation_rate)
             if self._unique_check(chrom, population):
                 population.append(chrom)
 
         return population
     def generate_next_generation(self,
                                 previous_population: List[Chromosome],
-                                fitness_scores: List[float],
                                 mutation_rate: float = 0.15,
                                 crossover_rate: float = 0.7,
                                 d2o_variation_rate: int = 5) -> List[Chromosome]:
@@ -421,7 +414,6 @@ class PopulationGenerator:
 
         Args:
             previous_population: Population de la génération précédente
-            fitness_scores: Scores de fitness correspondants
             mutation_rate: (à revoir) Probabilité de mutation par gène (0-1)
             crossover_rate: (à revoir) Probabilité de croisement (0-1)
             d2o_variation_rate: Amplitude max de variation de D2O (ex: 5%)
@@ -435,17 +427,9 @@ class PopulationGenerator:
         assert 0 <= mutation_rate <= 1, "mutation_rate doit être entre 0 et 1"
         assert 0 <= crossover_rate <= 1, "crossover_rate doit être entre 0 et 1"
 
-        # 1. Attribuer les fitness aux chromosomes
-        for chrom, fitness in zip(previous_population, fitness_scores):
-            chrom.fitness = fitness
-
-        # 2. Trier par fitness décroissant
-        sorted_population = sorted(previous_population,
-                                  key=lambda x: x.fitness,
-                                  reverse=True)
 
         # TIER 1 : Sélection (n/3 chromosomes)
-        tier1_selectionnes = self._selection_tier1(sorted_population)
+        tier1_selectionnes = self._selection_tier1(previous_population)
 
         # TIER 2 : Mutation (n/3 chromosomes)
         tier2_mutes = self._mutation_tier2(tier1_selectionnes, d2o_variation_rate)
@@ -466,10 +450,11 @@ class PopulationGenerator:
         Vérification que le chromosome qui va etre ajouter a la pop n'y est pas déjà
         :param new_chromosome: chromosome qu'on veut ajouter
         :param subpopulation: population avec des chromosomes uniques
-        :return: False si un chromosome avec les memes motif de deuterisation et do est trouvée, True sinon
+        :return: False si un chromosome avec les memes motif de deuterisation et do2 equivalent (±5%) est trouvée, True sinon
         """
         for chromosome in subpopulation:
-            if chromosome.deuteration == new_chromosome.deuteration and chromosome.fitness == new_chromosome.fitness:
+            if chromosome.deuteration == new_chromosome.deuteration and new_chromosome.d2o - 5 <= chromosome.d2o <= new_chromosome.d2o + 5 :
+                print("2 chromosome IDENTIQUES")
                 return False
         return True
 
@@ -513,21 +498,24 @@ class PopulationGenerator:
         """
         tier_size = self.population_size // 3
         selectionnes = []
-
         # Partie A: Élitisme - prendre les e meilleurs
         for i in range(self.elitism):
             selectionnes.append(sorted_population[i].copy())
-
+            #xprint(f"Le chromosome selectionne a un d2o de {sorted_population[i].d2o} et une fitness de {sorted_population[i].fitness:.2f}")
         # Partie B: Sélection probabiliste pour le reste
         nombre_a_selectionner = tier_size - self.elitism
+        #print (f"le nombre à selectionner est { nombre_a_selectionner }")
 
         if nombre_a_selectionner > 0:
+            pop_a_selectionee = sorted_population[self.elitism:]
             # Calculer les probabilités proportionnelles au fitness
-            probas = self._calculer_probabilites_selection(sorted_population)
-
+            probas = self._calculer_probabilites_selection(pop_a_selectionee)
+            #print(probas)
+            #print(f"le premier de la liste a un d2o de {pop_a_selectionee[i].d2o} et une fitness de {pop_a_selectionee[i].fitness:.2f}")
             # Sélectionner avec probabilité proportionnelle
             for _ in range(nombre_a_selectionner):
-                selected = random.choices(sorted_population, weights=probas, k=1)[0]
+                selected = random.choices(pop_a_selectionee, weights=probas, k=1)[0]
+                #print( f"les selectione on un d2o de {selected.d2o} et une fitness de {selected.fitness:.2f}")
                 selectionnes.append(selected.copy())
 
         return selectionnes
@@ -546,7 +534,7 @@ class PopulationGenerator:
         tier_size = self.population_size // 3
         mutes = []
 
-        for _ in range(tier_size):
+        while len(mutes) < tier_size:
             # 1. Choisir un parent au hasard
             parent = random.choice(selectionnes)
             enfant = parent.copy()
@@ -567,8 +555,8 @@ class PopulationGenerator:
             # 3. Muter le D2O (50% de chance)
             if random.choice([True, False]):
                 enfant.modify_d2o(d2o_variation_rate)
-
-            mutes.append(enfant)
+            if self._unique_check(enfant, mutes + selectionnes):
+                mutes.append(enfant)
 
         return mutes
 
@@ -585,7 +573,7 @@ class PopulationGenerator:
         tier_size = self.population_size // 3
         crossovers = []
 
-        for _ in range(tier_size):
+        while len(crossovers) < tier_size:
             # 1. Choisir 2 parents au hasard
             parent1, parent2 = random.sample(selectionnes, 2)
 
@@ -603,8 +591,8 @@ class PopulationGenerator:
 
             # 4. Transmission du D2O selon règles
             if point_coupe == len(self.aa_list) // 2:  # Exactement à la moitié (position 10 pour 20 AA)
-                # Ne pas transmettre, générer nouveau D2O aléatoire
-                enfant.randomize_d2o()
+                # Transmetre un des 2 parent de maniere aleatoire
+                enfant.d2o = random.choice([parent1.d2o, parent2.d2o])
             else:
                 # Transmettre avec le parent du plus petit morceau
                 if point_coupe < len(self.aa_list) // 2:
@@ -635,7 +623,7 @@ if __name__ == "__main__":
     print("CONFIGURATION DE L'ALGORITHME GÉNÉTIQUE")
     print(f"Population size      : {args.population_size}")
     print(f"Élitisme             : {args.elitism}")
-    print(f"D2O initial          : {args.d2o_initial}%")
+    #print(f"D2O initial          : {args.d2o_initial}%")
     print(f"D2O variation rate   : ±{args.d2o_variation_rate}%")
     print(f"Mutation rate        : {args.mutation_rate}")
     print(f"Crossover rate       : {args.crossover_rate}")
@@ -648,7 +636,7 @@ if __name__ == "__main__":
         aa_list=AMINO_ACIDS,
         modifiable=restrictions,
         population_size=args.population_size,
-        d2o_initial=args.d2o_initial,
+        #d2o_initial=args.d2o_initial,
         elitism=args.elitism,
         d2o_variation_rate=args.d2o_variation_rate,
     )
@@ -660,35 +648,39 @@ if __name__ == "__main__":
     print("\n>>> Simulation de l'évaluation par SANS...")
     fitness_scores = [random.uniform(0.3, 0.9) for _ in pop]
 
+    #atribué la fitness au chromosomes
     for chrom, fitness in zip(pop, fitness_scores):
         chrom.fitness = fitness
 
-    sorted_pop_0 = sorted(pop,
+    sorted_pop = sorted(pop,
                                key=lambda x: x.fitness,
                                reverse=True)
 
-    for i, chromosome in enumerate(sorted_pop_0):
+    for i, chromosome in enumerate(sorted_pop):
         print(f"{i+1}. {chromosome}")
-        #print(chromosome.deuteration)
+
 
     # Génération n : Évolution
     for gen in range(1, args.generations + 1):
         print(f"\n>>> GÉNÉRATION {gen} - Évolution de la population")
         pop = generator.generate_next_generation(
-            previous_population=pop,
-            fitness_scores=fitness_scores,
+            previous_population=sorted_pop,
             mutation_rate=args.mutation_rate,
             crossover_rate=args.crossover_rate,
             d2o_variation_rate=args.d2o_variation_rate
         )
 
-        # Nouvelle évaluation simulée
+        # Simuler des scores de fitness aléatoires (normalement calculés par SANS)
+        print("\n>>> Simulation de l'évaluation par SANS...")
         fitness_scores = [random.uniform(0.3, 0.9) for _ in pop]
+
+        # atribué la fitness au chromosomes
         for chrom, fitness in zip(pop, fitness_scores):
             chrom.fitness = fitness
 
-        #sorted_pop = sorted(pop,
-        #                    key=lambda x: x.fitness,
-        #                    reverse=True)
-        for i, chromosome in enumerate(pop):
+        sorted_pop = sorted(pop,
+                              key=lambda x: x.fitness,
+                              reverse=True)
+
+        for i, chromosome in enumerate(sorted_pop):
             print(f"{i+1}. {chromosome}")
