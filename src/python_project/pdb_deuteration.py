@@ -84,28 +84,28 @@ class PdbDeuteration:
                         continue
 
                     labile_vector = self._is_labile_hydrogen(residue)
-                    print(labile_vector)
+                    #print(labile_vector)
                     aa_index = AA_DICT[residue_name]
                     should_deuterate = chromosome.deuteration[aa_index]
-                    if should_deuterate:
-                        print(f"=========Le residue {residue_name} va etre deuteré========= ")
-                    else:
-                        print(f"=========Les residue {residue_name} va pas etre deuteré=======")
+                    #if should_deuterate:
+                        #print(f"=========Le residue {residue_name} va etre deuteré========= ")
+                    #else:
+                        #print(f"=========Les residue {residue_name} va pas etre deuteré=======")
 
 
                     # Traitement de chaque atome du résidu
                     for atom, is_labile in zip(residue, labile_vector):
                         #print(f"atom element name: {atom.element.name}") #que H (derniere colonne)
-                        print(f"atom name: {atom.name}") # H1 (deuxieme colonne)
+                        #print(f"atom name: {atom.name}") # H1 (deuxieme colonne)
                         element = atom.element.name
 
                         if is_labile:
                             # H labile: appliquer selon D₂O%
                             if random.random() * 100 < chromosome.d2o:
                                 if element == "H":
-                                    print("L'atome labile va etre deuteré")
+                                    #print("L'atome labile va etre deuteré")
                                     self._convert_atom_H_to_D(atom)
-                                    print(f"New atom name: {atom.name}")
+                                    #print(f"New atom name: {atom.name}")
                         element = atom.element.name
                         # Ignorer les atomes qui ne sont ni H ni D
                         #if element not in ("H"):
@@ -116,9 +116,9 @@ class PdbDeuteration:
 
                         if should_deuterate:
                             if element == "H":
-                                print("L'atome dans le AA select va etre deutéré")
+                                #print("L'atome dans le AA select va etre deutéré")
                                 self._convert_atom_H_to_D(atom)
-                                print(f"New atom name: {atom.name}")
+                                #print(f"New atom name: {atom.name}")
 
                         #print(f"atom element name: {atom.element.name}")  # que H (derniere colonne)
                         #print(f"atom name: {atom.name}")  # H1 (deuxieme colonne)
