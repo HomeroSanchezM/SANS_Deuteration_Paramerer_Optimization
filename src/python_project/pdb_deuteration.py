@@ -164,7 +164,25 @@ class PdbDeuteration:
                     side_chain = False
                     list_labile.append(False)
         return list_labile
-    
+
+    def save(self, output_path: str) -> None:
+        """
+        Sauvegarde la structure modifiée.
+
+        Args:
+            output_path: Chemin du fichier de sortie
+
+        Raises:
+            IOError: Si l'écriture échoue
+        """
+        try:
+            output_path = Path(output_path)
+            self.structure.write_pdb(str(output_path))
+            logger.info(f"Structure saved: {output_path}")
+        except Exception as e:
+            raise IOError(f"Error while saving: {e}")
+
+
 if __name__ == "__main__":
 
     if len(sys.argv) < 2:
@@ -188,4 +206,5 @@ if __name__ == "__main__":
     test_chromosome.d2o = 47
 
     test_deuterator.apply_deuteration(test_chromosome)
-
+    #save pdb
+    test_deuterator.save(output_file)
