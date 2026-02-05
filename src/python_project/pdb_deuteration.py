@@ -99,6 +99,15 @@ class PdbDeuteration:
                         #print(f"atom name: {atom.name}") # H1 (deuxieme colonne)
                         element = atom.element.name
 
+                        if should_deuterate:
+                            if element == "H" and not is_labile:
+                                #print("L'atome dans le AA select va etre deutéré")
+                                self._convert_atom_H_to_D(atom)
+                                #print(f"New atom name: {atom.name}")
+
+                        #print(f"atom element name: {atom.element.name}")  # que H (derniere colonne)
+                        #print(f"atom name: {atom.name}")  # H1 (deuxieme colonne)
+
                         if is_labile:
                             # H labile: appliquer selon D₂O%
                             if random.random() * 100 < chromosome.d2o:
@@ -110,15 +119,6 @@ class PdbDeuteration:
                         # Ignorer les atomes qui ne sont ni H ni D
                         #if element not in ("H"):
                         #    continue
-
-                        #print(f"atom element name: {atom.element.name}")  # que H (derniere colonne)
-                        #print(f"atom name: {atom.name}")  # H1 (deuxieme colonne)
-
-                        if should_deuterate:
-                            if element == "H":
-                                #print("L'atome dans le AA select va etre deutéré")
-                                self._convert_atom_H_to_D(atom)
-                                #print(f"New atom name: {atom.name}")
 
                         #print(f"atom element name: {atom.element.name}")  # que H (derniere colonne)
                         #print(f"atom name: {atom.name}")  # H1 (deuxieme colonne)
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     test_chromosome = Chromosome(aa_list=AMINO_ACIDS,
                                  modifiable=restrictions)
     test_chromosome.deuteration = test_deuteration_vector
-    test_chromosome.d2o = 47
+    test_chromosome.d2o = 80
 
     test_deuterator.apply_deuteration(test_chromosome)
     #save pdb
