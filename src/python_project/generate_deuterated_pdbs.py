@@ -126,8 +126,7 @@ Usage examples:
     parser.add_argument(
         '--output_dir',
         type=str,
-        default='deuterated_pdb',
-        help='Output folder  (defaut: deuterated_pdb)'
+        help='Output folder  (defaut: strcuture_name_deuterated_pdb/)'
     )
 
     args = parser.parse_args()
@@ -163,7 +162,7 @@ Usage examples:
     return args
 
 
-def create_output_directory(output_dir: str) -> Path:
+def create_output_directory(output_dir: str, pdb_file: str) -> Path:
     """
     Creates the output folder if it doesn't already exist.
 
@@ -173,10 +172,20 @@ def create_output_directory(output_dir: str) -> Path:
         Path: Path object of the created folder
 
     """
-    output_path = Path(output_dir)
-    output_path.mkdir(exist_ok=True, parents=True)
-    logger.info(f"Output folder created/verified: {output_path.absolute()}")
-    return output_path
+    if output_dir is None:
+        output_path = Path(pdb_file.split(".")[0]+"_deuterated_pdbs")
+        ref_path = output_path / "ref"
+        output_path.mkdir(exist_ok=True, parents=True)
+        ref_path.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Output folder created/verified: {output_path.absolute()}")
+
+    else:
+        output_path = Path(output_dir)
+        ref_path = output_path / "ref"
+        output_path.mkdir(exist_ok=True, parents=True)
+        ref_path.mkdir(exist_ok=True, parents=True)
+        logger.info(f"Output folder created/verified: {output_path.absolute()}")
+    return output_path, ref_path
 
 
 def generate_pdb_filename(chromosome: Chromosome, index: int, generation: int = 0) -> str:
@@ -364,7 +373,34 @@ def main():
     logger.info("=" * 80)
 
     # Create output directory
-    output_dir = create_output_directory(args.output_dir)
+    output_dir, ref_dir = create_output_directory(args.output_dir, pdb_path.name)
+
+    # Create ref pdb
+    logger.info("\n>>> REF - Creating ref pbd")
+    total_deuteration = Chromosome(
+        aa_list=AMINO_ACIDS,
+        modifiable=restrictions
+    )
+    total_deuteration.deuteration = [True]*20
+    total_deuteration.d2o = 100
+
+    total_protonation = Chromosome(
+        aa_list=AMINO_ACIDS,
+        modifiable=restrictions
+    )
+    total_protonation.protonation = [False]*20
+    total_protonation.d2o = 0
+
+    # Generate red PDBs
+    logger.info("Generating total deuteration PDB files")
+    total_deuteration_deuterator = PdbDeuteration(args.pdb_file)
+    total_deuteration_deuterator.apply_deuteration(total_deuteration)
+    total_deuteration_deuterator.save(ref_dir / Path(pdb_path.name.split(".")[0] + "_total_deuteration.pdb") )
+
+    logger.info("Generating total protonation PDB files")
+    total_protonation_deuterator = PdbDeuteration(args.pdb_file)
+    total_protonation_deuterator.apply_deuteration(total_protonation)
+    total_protonation_deuterator.save(ref_dir / Path(pdb_path.name.split(".")[0] + "_total_protonation.pdb"))
 
     # Create population generator
     logger.info("\n>>> GENERATION 0 - Creating initial population")
