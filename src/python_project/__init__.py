@@ -34,10 +34,11 @@ Usage:
 import random
 import argparse
 import numpy as np
+import configparser
 from typing import List, Tuple
 from dataclasses import dataclass
 
-from create_pop_v2 import restrictions
+
 
 
 # ============================================================================
@@ -59,37 +60,33 @@ def parse_arguments():
 Usage example:
   python __init__.py --population_size 50 --d2o_initial 60
   python __init__.py --mutation_rate 0.2 --crossover_rate 0.9 --elitism 5
-  python __init__.py -p 100 -d 50 -e 3 -m 0.15 -c 0.8 -v 10
+  python __init__.py -p 100 -e 3 -m 0.15 -c 0.8 -v 10
         """
+    )
+
+    # Optional config file (positional)
+    parser.add_argument(
+        "config",
+        nargs="?",
+        help="Path to config.ini file"
     )
 
     # Population parameters
     parser.add_argument(
         '-p', '--population_size',
         type=int,
-        default=30,
         help='Population size (number of chromosomes, MUST be a multiple of 3). Default: 30'
     )
 
     parser.add_argument(
         '-e', '--elitism',
         type=int,
-        default=2,
         help='Number of elite individuals preserved at each generation (must be ≤ population_size/3). Default: 5'
     )
-
-    # D2O parameters
-    #parser.add_argument(
-    #    '-d', '--d2o_initial',
-    #    type=int,
-    #    default=50,
-    #    help='Initial D2O percentage (0-100). Used for generation 0. Default: 50'
-    #)
 
     parser.add_argument(
         '-v', '--d2o_variation_rate',
         type=int,
-        default=5,
         help='Maximum D2O variation amplitude. Default: 50'
     )
 
@@ -97,14 +94,12 @@ Usage example:
     parser.add_argument(
         '-m', '--mutation_rate',
         type=float,
-        default=0.15,
         help='Mutation rate (0.0-1.0). Probability that a gene will be mutated. Default: 0.15'
     )
 
     parser.add_argument(
         '-c', '--crossover_rate',
         type=float,
-        default=0.8,
         help='Crossover rate (0.0-1.0). Probability of crossover between two parents. Default: 0.8'
     )
 
@@ -112,48 +107,97 @@ Usage example:
     parser.add_argument(
         '-g', '--generations',
         type=int,
-        default=1,
         help='Number of generations to execute. Default: 1'
     )
 
     parser.add_argument(
         '--seed',
         type=int,
-        default=None,
         help='Random seed for reproducibility. Default: None (random)'
     )
 
     args = parser.parse_args()
 
-    # Argument validation
-    if args.population_size <= 0:
-        parser.error("population_size must be > 0")
-
-    if args.population_size % 3 != 0:
-        parser.error(f"population_size must be a multiple of 3 (currently: {args.population_size})")
-
-    if args.elitism < 0:
-        parser.error("elitism must be >= 0")
-
-    if args.elitism >= args.population_size:
-        parser.error("elitism must be < population_size")
-
-    if args.elitism > args.population_size // 3:
-        parser.error(f"elitism must be ≤ population_size/3 (max: {args.population_size // 3})")
-
-    if not (0 <= args.d2o_variation_rate <= 100):
-        parser.error("d2o_variation_rate must be between 0 and 100")
-
-    if not (0 <= args.mutation_rate <= 1):
-        parser.error("mutation_rate must be between 0.0 and 1.0")
-
-    if not (0 <= args.crossover_rate <= 1):
-        parser.error("crossover_rate must be between 0.0 and 1.0")
-
-    if args.generations < 1:
-        parser.error("generations must be >= 1")
-
     return args
+
+def validate_config(cfg):
+    # Population
+    if cfg["population_size"] <= 0:
+        raise ValueError("population_size must be > 0")
+
+    if cfg["population_size"] % 3 != 0:
+        raise ValueError(
+            f"population_size must be a multiple of 3 "
+            f"(got {cfg['population_size']})"
+        )
+
+    if cfg["elitism"] < 0:
+        raise ValueError("elitism must be >= 0")
+
+    if cfg["elitism"] > cfg["population_size"] // 3:
+        raise ValueError(
+            f"elitism must be ≤ population_size/3 "
+            f"(max {cfg['population_size'] // 3})"
+        )
+
+    # Rates
+    if not (0.0 <= cfg["mutation_rate"] <= 1.0):
+        raise ValueError("mutation_rate must be in [0.0, 1.0]")
+
+    if not (0.0 <= cfg["crossover_rate"] <= 1.0):
+        raise ValueError("crossover_rate must be in [0.0, 1.0]")
+
+    if not (0 <= cfg["d2o_variation_rate"] <= 100):
+        raise ValueError("d2o_variation_rate must be in [0, 100]")
+
+    # Execution
+    if cfg["generations"] < 1:
+        raise ValueError("generations must be >= 1")
+
+    # Restrictions
+    if len(cfg["restrictions"]) != len(AMINO_ACIDS):
+        raise ValueError(
+            f"restrictions length ({len(cfg['restrictions'])}) "
+            f"!= number of amino acids ({len(AMINO_ACIDS)})"
+        )
+
+
+def load_config_ini(path: str):
+    config = configparser.ConfigParser()
+    config.read(path)
+
+    cfg = {
+        "population_size": config.getint("POPULATION", "population_size"),
+        "elitism": config.getint("POPULATION", "elitism"),
+        "d2o_variation_rate": config.getint("POPULATION", "d2o_variation_rate"),
+        "mutation_rate": config.getfloat("GENETIC", "mutation_rate"),
+        "crossover_rate": config.getfloat("GENETIC", "crossover_rate"),
+        "generations": config.getint("EXECUTION", "generations"),
+        "seed": config.getint("EXECUTION", "seed", fallback=None),
+        "restrictions": [
+            config.getboolean("RESTRICTIONS", aa.code_3)
+            for aa in AMINO_ACIDS
+        ]
+    }
+    return cfg
+
+def merge_config(cli_args, ini_cfg=None):
+    ini_cfg = ini_cfg or {}
+
+    def pick(cli, ini, default):
+        return cli if cli is not None else ini if ini is not None else default
+
+    return {
+        "population_size": pick(cli_args.population_size, ini_cfg.get("population_size"), 30),
+        "elitism": pick(cli_args.elitism, ini_cfg.get("elitism"), 2),
+        "d2o_variation_rate": pick(cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"), 5),
+        "mutation_rate": pick(cli_args.mutation_rate, ini_cfg.get("mutation_rate"), 0.15),
+        "crossover_rate": pick(cli_args.crossover_rate, ini_cfg.get("crossover_rate"), 0.8),
+        "generations": pick(cli_args.generations, ini_cfg.get("generations"), 1),
+        "seed": pick(cli_args.seed, ini_cfg.get("seed"), None),
+        "restrictions": ini_cfg.get("restrictions", [True] * len(AMINO_ACIDS))
+    }
+
 
 # ============================================================================
 #                   DATA STRUCTURE DEFINITIONS
@@ -201,31 +245,7 @@ AMINO_ACIDS = [
 AA_DICT = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
 
 
-#List to determine if an AA is deuterable (True) or not (False)
-#restrictions = [
-#        True,   # Ala
-#        False,  # Arg
-#        True,   # Asn
-#        True,   # Asp
-#        False,  # Cys
-#        False,  # Glu
-#        True,   # Gln
-#        True,   # Gly
-#        False,  # His
-#        True,   # Ile
-#        True,   # Leu
-#        True,   # Lys
-#        True,   # Met
-#        True,   # Phe
-#        True,   # Pro
-#        True,   # Ser
-#        True,   # Thr
-#        True,   # Trp
-#        True,   # Typ
-#        True,   # Val
-#    ]
 
-restrictions = [True] *20
 # ============================================================================
 #                           CHROMOSOME CLASS
 # ============================================================================
@@ -315,12 +335,13 @@ class Chromosome:
         Returns:
             str: "{AA codes} | D2O: X% | Fitness: Y"
         """
-        deuterated_aa = [
-            self.aa_list[i].code_3
-            for i in range(len(self.aa_list))
-            if self.deuteration[i]
-        ]
-        return f"{', '.join(deuterated_aa) if deuterated_aa else 'None'} | D2O: {self.d2o}% | Fitness: {self.fitness:.2f}"
+        result = []
+        for i, aa in enumerate(self.aa_list):
+            if self.deuteration[i]:
+                result.append(f"{aa.code_3}(D)")
+            else:
+                result.append(f"{aa.code_3}(H)")
+        return " | ".join(result) + f" | D2O={self.d2o}% | Fitness={self.fitness:.2f}"
 
     def __repr__(self) -> str:
         """Technical representation."""
@@ -441,27 +462,25 @@ class PopulationGenerator:
         """
         Generates the next generation from the current population.
 
-        ⚠️  IMPORTANT: previous_population MUST have fitness values set
+        IMPORTANT: previous_population MUST have fitness values set
 
         3-tier architecture:
-        ┌──────────────────────────────────────────────────────────────┐
-        │  TIER 1 - SELECTION (n/3 chromosomes)                       │
-        │  - e best (elitism)                                          │
-        │  - (n/3 - e) by probabilistic selection                     │
-        │  → Serves as parents for tiers 2 and 3                      │
-        └──────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────┐
-        │  TIER 2 - MUTATION (n/3 chromosomes)                        │
-        │  - Random parent from tier 1                                 │
-        │  - Mutate 1, 2, or 3 AA                                     │
-        │  - 50% chance: mutate D2O                                    │
-        └──────────────────────────────────────────────────────────────┘
-        ┌──────────────────────────────────────────────────────────────┐
-        │  TIER 3 - CROSSOVER (n/3 chromosomes)                       │
-        │  - 2 random parents from tier 1                              │
-        │  - Random cut point (1-19)                                   │
-        │  - D2O transmission according to special rules               │
-        └──────────────────────────────────────────────────────────────┘
+
+            TIER 1 - SELECTION (n/3 chromosomes)
+            - e best (elitism)
+            - (n/3 - e) by probabilistic selection
+            → Serves as parents for tiers 2 and 3
+
+            TIER 2 - MUTATION (n/3 chromosomes)
+            - Random parent from tier 1
+            - Mutate 1, 2, or 3 AA
+            - 50% chance: mutate D2O
+
+            TIER 3 - CROSSOVER (n/3 chromosomes)
+            - 2 random parents from tier 1
+            - Random cut point (1-19)
+            - D2O transmission according to special rules
+
 
         Args:
             previous_population: Population with fitness set (sorted by fitness)
@@ -670,33 +689,43 @@ if __name__ == "__main__":
     # Parse command-line arguments
     args = parse_arguments()
 
+    ini_cfg = None
+    if args.config:
+        ini_cfg = load_config_ini(args.config)
+
+    cfg = merge_config(args, ini_cfg)
+
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        print(f"\nCONFIGURATION ERROR\n{e}")
+        exit(1)
+
     # Set random seed if specified (for reproducibility)
-    if args.seed is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        print(f"Random seed set to: {args.seed}")
+    if cfg["seed"] is not None:
+        random.seed(cfg["seed"])
+        np.random.seed(cfg["seed"])
+        print(f"Random seed set to: {cfg['seed']}")
 
     # Display configuration
 
     print("GENETIC ALGORITHM CONFIGURATION")
-    print(f"Population size      : {args.population_size}")
-    print(f"Elitism              : {args.elitism}")
-    #print(f"Initial D2O          : {args.d2o_initial}%")
-    print(f"D2O variation rate   : ±{args.d2o_variation_rate}%")
-    print(f"Mutation rate        : {args.mutation_rate}")
-    print(f"Crossover rate       : {args.crossover_rate}")
-    print(f"Generations          : {args.generations}")
+    print(f"Population size      : {cfg['population_size']}")
+    print(f"Elitism              : {cfg['elitism']}")
+    print(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
+    print(f"Mutation rate        : {cfg['mutation_rate']}")
+    print(f"Crossover rate       : {cfg['crossover_rate']}")
+    print(f"Generations          : {cfg['generations']}")
 
 
     # Create and execute the genetic algorithm
     print("\n>>> GENERATION 0 - Population creation")
     generator = PopulationGenerator(
         aa_list=AMINO_ACIDS,
-        modifiable=restrictions,
-        population_size=args.population_size,
-        #d2o_initial=args.d2o_initial,
-        elitism=args.elitism,
-        d2o_variation_rate=args.d2o_variation_rate,
+        modifiable=cfg["restrictions"],
+        population_size=cfg["population_size"],
+        elitism=cfg["elitism"],
+        d2o_variation_rate=cfg["d2o_variation_rate"]
     )
 
     #Generation and display of initial population
@@ -720,13 +749,13 @@ if __name__ == "__main__":
 
 
     # Generation n : Evolution
-    for gen in range(1, args.generations ):
+    for gen in range(1, cfg["generations"] ):
         print(f"\n>>> GENERATION {gen} - Population evolution")
         pop = generator.generate_next_generation(
             previous_population=sorted_pop,
-            mutation_rate=args.mutation_rate,
-            crossover_rate=args.crossover_rate,
-            d2o_variation_rate=args.d2o_variation_rate
+            mutation_rate=cfg["mutation_rate"],
+            crossover_rate=cfg["crossover_rate"],
+            d2o_variation_rate=cfg["d2o_variation_rate"]
         )
 
         # Simulate random fitness scores (normally calculated by SANS)
@@ -743,7 +772,7 @@ if __name__ == "__main__":
 
         for i, chromosome in enumerate(sorted_pop):
             print(f"{i+1}. {chromosome}")
-            if args.population_size / 3 == i+1:
+            if cfg["population_size"] / 3 == i+1:
                 print("\n")
-            if (args.population_size / 3 )*2== i+1:
+            if (cfg["population_size"] / 3 )*2== i+1:
                 print("\n")
