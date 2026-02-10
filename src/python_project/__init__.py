@@ -19,7 +19,7 @@ Usage:
         d2o_initial=50,
         elitism=5
     )
-    population = generator.generate_initial_population()55
+    population = generator.generate_initial_population()
 
     # Following generations
     new_population = generator.generate_next_generation(
@@ -121,6 +121,7 @@ Usage example:
     return args
 
 def validate_config(cfg):
+    """Validates the configuration parameters."""
     # Population
     if cfg["population_size"] <= 0:
         raise ValueError("population_size must be > 0")
@@ -163,6 +164,7 @@ def validate_config(cfg):
 
 
 def load_config_ini(path: str):
+    """Loads configuration from a .ini file."""
     config = configparser.ConfigParser()
     config.read(path)
 
@@ -182,6 +184,7 @@ def load_config_ini(path: str):
     return cfg
 
 def merge_config(cli_args, ini_cfg=None):
+    """Merges CLI arguments with INI configuration (CLI takes precedence)."""
     ini_cfg = ini_cfg or {}
 
     def pick(cli, ini, default):
@@ -244,54 +247,43 @@ AMINO_ACIDS = [
 # Dictionary for quick access by 3-letter code
 AA_DICT = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
 
-
-
 # ============================================================================
 #                           CHROMOSOME CLASS
 # ============================================================================
 
 class Chromosome:
     """
-    Represents a chromosome in the genetic algorithm
-
-    A chromosome = a complete deuteration solution
-    - 1 deuteration vector of length 20 (1 per amino acid)
-    - 1 D2O value
+    Represents a chromosome (a deuteration solution).
 
     Attributes:
         aa_list (List[AminoAcid]): List of amino acids
-        modifiable (List[bool]): Indicates which AA can be modified
-        deuteration (List[bool]): Deuteration state for each AA
-        d2o (int): D2O percentage (0-100)
+        modifiable (List[bool]): Restriction list (which AA are modifiable)
+        deuteration (List[bool]): Deuteration vector (True = deuterated)
+        d2o (int): Percentage of D2O (0-100)
         fitness (float): Fitness score (set by SANS evaluation)
     """
 
     def __init__(self, aa_list: List[AminoAcid], modifiable: List[bool]):
         """
-        Initializes an empty chromosome.
+        Initializes the chromosome with a random deuteration configuration and d20 configuration.
 
         Args:
             aa_list: List of amino acids
-            modifiable: Indicates which positions can be deuterated
+            modifiable: List indicating which AA are modifiable
         """
         self.aa_list = aa_list
         self.modifiable = modifiable
-        self.deuteration = [False] * len(aa_list)  # All non-deuterated by default
-        self.d2o = 50  # Default value
+        self.randomize_deuteration()
+        self.d2o = random.randint(0, 100)# Default value
         self.fitness = 0.0  # Will be set after SANS evaluation
 
     def copy(self) -> 'Chromosome':
-        """
-        Creates a deep copy of the chromosome.
-
-        Returns:
-            Chromosome: Independent copy
-        """
-        nouveau = Chromosome(self.aa_list, self.modifiable)
-        nouveau.deuteration = self.deuteration.copy()
-        nouveau.d2o = self.d2o
-        nouveau.fitness = self.fitness
-        return nouveau
+        """Creates a deep copy of this chromosome."""
+        new_chrom = Chromosome(self.aa_list, self.modifiable)
+        new_chrom.deuteration = self.deuteration[:]
+        new_chrom.d2o = self.d2o
+        new_chrom.fitness = self.fitness
+        return new_chrom
 
     def randomize_deuteration(self) -> None:
         """
@@ -301,13 +293,14 @@ class Chromosome:
         - Respects modifiable constraints
         - Each modifiable AA has 50% chance to be deuterated
         """
+        self.deuteration = [False] * len(self.aa_list) # All non-deuterated by default
         for i in range(len(self.aa_list)):
             if self.modifiable[i]:
                 self.deuteration[i] = random.choice([True, False])
 
     def modify_d2o(self, variation_range: int = 10) -> None:
         """
-        Modifies D2O value with random variation.
+        Modifies D2O value with random variation within limits.
 
         Args:
             variation_range: Maximum variation amplitude
@@ -319,14 +312,20 @@ class Chromosome:
         variation = random.randint(-variation_range, variation_range)
         self.d2o = max(0, min(100, self.d2o + variation))
 
-    def set_d2o(self, value: int) -> None:
+    def __eq__(self, other: 'Chromosome') -> bool:
         """
-        Sets D2O value directly.
+        Checks if two chromosomes are identical.
 
-        Args:
-            value: New D2O value (will be clamped to [0, 100])
+        Two chromosomes are identical if:
+        - Same deuteration vector
+        - Same D2O value
+
+        Fitness is NOT included in comparison
         """
-        self.d2o = max(0, min(100, value))
+        if not isinstance(other, Chromosome):
+            return False
+        return (self.deuteration == other.deuteration and
+                self.d2o == other.d2o)
 
     def __str__(self) -> str:
         """
@@ -347,20 +346,6 @@ class Chromosome:
         """Technical representation."""
         return f"Chromosome(d2o={self.d2o}, fitness={self.fitness:.2f})"
 
-    def __eq__(self, other: 'Chromosome') -> bool:
-        """
-        Checks if two chromosomes are identical.
-
-        Two chromosomes are identical if:
-        - Same deuteration vector
-        - Same D2O value
-
-        Fitness is NOT included in comparison
-        """
-        if not isinstance(other, Chromosome):
-            return False
-        return (self.deuteration == other.deuteration and
-                self.d2o == other.d2o)
 
     def __hash__(self) -> int:
         """
@@ -372,29 +357,31 @@ class Chromosome:
 
 
 # ============================================================================
-#                       POPULATION GENERATOR CLASS
+#                   POPULATION GENERATOR
 # ============================================================================
 
 class PopulationGenerator:
     """
-    Manages the generation and evolution of chromosome populations.
+    Main class managing the generation and evolution of populations.
 
     This class implements the complete genetic algorithm:
     - Initial generation 0: random population
     - Generation n: evolution via selection/mutation/crossover
 
-    Main parameters:
-        population_size: Must be a multiple of 3 (for 3-tier architecture)
-        elitism: Number of best individuals preserved (must be ≤ population_size/3)
+    Attributes:
+        aa_list (List[AminoAcid]): List of amino acids
+        modifiable (List[bool]): Restriction list
+        population_size (int): Population size (MUST be multiple of 3)
+        elitism (int): Number of elites preserved
+        d2o_variation_rate (float): D2O variation rate for mutations
     """
 
     def __init__(self,
                  aa_list: List[AminoAcid],
                  modifiable: List[bool],
-                 population_size: int = 30,
-                 #d2o_initial: int = 50,
-                 elitism: int = 5,
-                 d2o_variation_rate: int = 5):
+                 population_size: int,
+                 elitism: int,
+                 d2o_variation_rate: int):
         """
         Initializes the generator.
 
@@ -418,39 +405,31 @@ class PopulationGenerator:
         self.aa_list = aa_list
         self.modifiable = modifiable
         self.population_size = population_size
-        #self.d2o_initial = d2o_initial
         self.elitism = elitism
         self.d2o_variation_rate = d2o_variation_rate
 
     def generate_initial_population(self) -> List[Chromosome]:
         """
-        Generates the initial population (Generation 0).
-
-        Method:
-        - Creates population_size unique chromosomes
-        - Each one with random deuteration
-        - All with D2O = d2o_initial
+        Generates an initial population of unique chromosomes.
 
         Returns:
-            List[Chromosome]: Initial population (not yet evaluated)
+            List[Chromosome]: List of unique chromosomes (not yet evaluated)
         """
         population = []
-        tentatives = 0
-        max_tentatives = self.population_size * 100  # Security to avoid infinite loop
+        attempts = 0
+        max_attempts = self.population_size * 1000
 
-        while len(population) < self.population_size and tentatives < max_tentatives:
+        while len(population) < self.population_size and attempts < max_attempts:
             chrom = Chromosome(self.aa_list, self.modifiable)
-            chrom.randomize_deuteration()
-            chrom.set_d2o(random.randint(0, 100))
-
-            # Only add if unique
-            if chrom not in population:
+            if self._unique_check(chrom, population):
                 population.append(chrom)
-
-            tentatives += 1
+            attempts += 1
 
         if len(population) < self.population_size:
-            raise RuntimeError(f"Could not generate {self.population_size} unique chromosomes")
+            raise RuntimeError(
+                f"Unable to generate {self.population_size} unique chromosomes "
+                f"after {max_attempts} attempts. Only {len(population)} generated."
+            )
 
         return population
 
@@ -460,7 +439,7 @@ class PopulationGenerator:
                                 crossover_rate: float = 0.8,
                                 d2o_variation_rate: int = 5) -> List[Chromosome]:
         """
-        Generates the next generation from the current population.
+        Generates the next generation from the previous population.
 
         IMPORTANT: previous_population MUST have fitness values set
 
@@ -483,10 +462,10 @@ class PopulationGenerator:
 
 
         Args:
-            previous_population: Population with fitness set (sorted by fitness)
-            mutation_rate: Probability of mutation (currently unused)
-            crossover_rate: Probability of crossover (currently unused)
-            d2o_variation_rate: Maximum D2O variation
+            previous_population: Previous generation (sorted by fitness)
+            mutation_rate: Mutation probability [0.0, 1.0]
+            crossover_rate: Crossover probability [0.0, 1.0]
+            d2o_variation_rate: Maximum D2O variation amplitude
 
         Returns:
             List[Chromosome]: New population (fitness not yet set)
@@ -505,11 +484,14 @@ class PopulationGenerator:
                           reverse=True)
 
         # Generation of 3 tiers
+	# TIER 1: Selection (n/3)
         tier1 = self._selection_tier1(sorted_pop)
+	# TIER 2: Mutation (n/3)
         tier2 = self._mutation_tier2(tier1, d2o_variation_rate)
+	# TIER 3: Crossover (n/3)
         tier3 = self._crossover_tier3(tier1)
 
-        # Combine the 3 tiers
+        # Combine all tiers
         new_population = tier1 + tier2 + tier3
 
         # Final validation
@@ -530,17 +512,13 @@ class PopulationGenerator:
         Returns:
             bool: True if unique, False otherwise
         """
-        for existing in population:
-            if chromosome == existing:
-                return False
-        return True
+        return chromosome not in population
 
-
-    def _calculer_probabilites_selection(self, population: List[Chromosome]) -> List[float]:
+    def _calcule_selection_probabilities(self, population: List[Chromosome]) -> List[float]:
         """
         Calculates selection probabilities proportional to fitness.
 
-        CRITICAL CONSTRAINT: NEVER 0% nor 100%
+        IMPORTANT: Probabilities are NEVER 0% nor 100%
 
         Method: Softmax with temperature to guarantee distribution > 0
         """
@@ -586,7 +564,7 @@ class PopulationGenerator:
         if nombre_a_selectionner > 0:
             pop_a_selectionee = sorted_population[self.elitism:]
             # Calculate probabilities proportional to fitness
-            probas = self._calculer_probabilites_selection(pop_a_selectionee)
+            probas = self._calcule_selection_probabilities(pop_a_selectionee)
             #print(probas)
             #print(f"the first in the list has a d2o of {pop_a_selectionee[i].d2o} and a fitness of {pop_a_selectionee[i].fitness:.2f}")
             # Select with proportional probability
@@ -682,44 +660,82 @@ class PopulationGenerator:
         return crossovers
 
 
+# ============================================================================
+#                   UTILITY FUNCTIONS
+# ============================================================================
 
-# Usage example
-if __name__ == "__main__":
-
-    # Parse command-line arguments
-    args = parse_arguments()
-
-    ini_cfg = None
-    if args.config:
-        ini_cfg = load_config_ini(args.config)
-
-    cfg = merge_config(args, ini_cfg)
-
-    try:
-        validate_config(cfg)
-    except ValueError as e:
-        print(f"\nCONFIGURATION ERROR\n{e}")
-        exit(1)
-
-    # Set random seed if specified (for reproducibility)
-    if cfg["seed"] is not None:
-        random.seed(cfg["seed"])
-        np.random.seed(cfg["seed"])
-        print(f"Random seed set to: {cfg['seed']}")
-
-    # Display configuration
-
+def display_config(cfg: dict):
+    """Displays the genetic algorithm configuration."""
+    print("\n" + "="*50)
     print("GENETIC ALGORITHM CONFIGURATION")
+    print("="*50)
     print(f"Population size      : {cfg['population_size']}")
     print(f"Elitism              : {cfg['elitism']}")
     print(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
     print(f"Mutation rate        : {cfg['mutation_rate']}")
     print(f"Crossover rate       : {cfg['crossover_rate']}")
     print(f"Generations          : {cfg['generations']}")
+    if cfg['seed'] is not None:
+        print(f"Random seed          : {cfg['seed']}")
+    print("="*50 + "\n")
 
 
-    # Create and execute the genetic algorithm
-    print("\n>>> GENERATION 0 - Population creation")
+def simulate_sans_evaluation(population: List[Chromosome]) -> List[Chromosome]:
+    """
+    Simulates SANS evaluation by assigning random fitness scores.
+    
+    Args:
+        population: List of chromosomes to evaluate
+        
+    Returns:
+        Population with assigned fitness scores
+    """
+    print(">>> Simulating SANS evaluation...")
+    fitness_scores = [random.uniform(0.3, 0.9) for _ in population]
+    
+    for chrom, fitness in zip(population, fitness_scores):
+        chrom.fitness = fitness
+    
+    return population
+
+
+def sort_and_display_population(population: List[Chromosome], 
+                                population_size: int,
+                                generation: int = 0) -> List[Chromosome]:
+    """
+    Sorts population by fitness and displays it with tier separators.
+    
+    Args:
+        population: List of chromosomes
+        population_size: Size of the population (for tier calculation)
+        generation: Generation number for display
+        
+    Returns:
+        Sorted population (best first)
+    """
+    sorted_pop = sorted(population, key=lambda x: x.fitness, reverse=True)
+    
+    print(f"\n>>> GENERATION {generation} - Results")
+    tier_size = population_size // 3
+    
+    for i, chromosome in enumerate(sorted_pop, 1):
+        print(f"{i:2d}. {chromosome}")
+        
+        # Add separator between tiers
+        if i == tier_size or i == tier_size * 2:
+            print("-" * 80)
+    
+    return sorted_pop
+
+
+def run_genetic_algorithm(cfg: dict):
+    """
+    Main execution function for the genetic algorithm.
+    
+    Args:
+        cfg: Configuration dictionary
+    """
+    # Create the population generator
     generator = PopulationGenerator(
         aa_list=AMINO_ACIDS,
         modifiable=cfg["restrictions"],
@@ -727,52 +743,83 @@ if __name__ == "__main__":
         elitism=cfg["elitism"],
         d2o_variation_rate=cfg["d2o_variation_rate"]
     )
-
-    #Generation and display of initial population
-    pop = generator.generate_initial_population()
-
-    # Simulate random fitness scores (normally calculated by SANS)
-    print("\n>>> Simulating SANS evaluation...")
-    fitness_scores = [random.uniform(0.3, 0.9) for _ in pop]
-
-    #assign fitness to chromosomes
-    for chrom, fitness in zip(pop, fitness_scores):
-        chrom.fitness = fitness
-
-    sorted_pop = sorted(pop,
-                               key=lambda x: x.fitness,
-                               reverse=True)
-
-    for i, chromosome in enumerate(sorted_pop):
-        print(f"{i+1}. {chromosome}")
-
-
-
-    # Generation n : Evolution
-    for gen in range(1, cfg["generations"] ):
-        print(f"\n>>> GENERATION {gen} - Population evolution")
-        pop = generator.generate_next_generation(
+    
+    # Generate initial population (Generation 0)
+    print("\n>>> GENERATION 0 - Initial population creation")
+    population = generator.generate_initial_population()
+    
+    # Evaluate and display
+    population = simulate_sans_evaluation(population)
+    sorted_pop = sort_and_display_population(
+        population, 
+        cfg["population_size"], 
+        generation=0
+    )
+    
+    # Evolution through generations
+    for gen in range(1, cfg["generations"] + 1):
+        print(f"\n{'='*80}")
+        print(f">>> GENERATION {gen} - Population evolution")
+        print('='*80)
+        
+        # Generate next generation
+        population = generator.generate_next_generation(
             previous_population=sorted_pop,
             mutation_rate=cfg["mutation_rate"],
             crossover_rate=cfg["crossover_rate"],
             d2o_variation_rate=cfg["d2o_variation_rate"]
         )
+        
+        # Evaluate and display
+        population = simulate_sans_evaluation(population)
+        sorted_pop = sort_and_display_population(
+            population,
+            cfg["population_size"],
+            generation=gen
+        )
+    
+    # Final summary
+    print("\n" + "="*80)
+    print("ALGORITHM COMPLETED")
+    print("="*80)
+    print(f"Best solution: {sorted_pop[0]}")
+    print("="*80 + "\n")
 
-        # Simulate random fitness scores (normally calculated by SANS)
-        print("\n>>> Simulating SANS evaluation...")
-        fitness_scores = [random.uniform(0.3, 0.9) for _ in pop]
 
-        # assign fitness to chromosomes
-        for chrom, fitness in zip(pop, fitness_scores):
-            chrom.fitness = fitness
+# ============================================================================
+#                           MAIN EXECUTION
+# ============================================================================
 
-        sorted_pop = sorted(pop,
-                              key=lambda x: x.fitness,
-                              reverse=True)
+def main():
+    """Main entry point of the program."""
+    # Parse arguments and load configuration
+    args = parse_arguments()
+    
+    ini_cfg = None
+    if args.config:
+        ini_cfg = load_config_ini(args.config)
+    
+    cfg = merge_config(args, ini_cfg)
+    
+    # Validate configuration
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        print(f"\n CONFIGURATION ERROR")
+        print(f"   {e}\n")
+        exit(1)
+    
+    # Set random seed if specified
+    if cfg["seed"] is not None:
+        random.seed(cfg["seed"])
+        np.random.seed(cfg["seed"])
+    
+    # Display configuration
+    display_config(cfg)
+    
+    # Run the genetic algorithm
+    run_genetic_algorithm(cfg)
 
-        for i, chromosome in enumerate(sorted_pop):
-            print(f"{i+1}. {chromosome}")
-            if cfg["population_size"] / 3 == i+1:
-                print("\n")
-            if (cfg["population_size"] / 3 )*2== i+1:
-                print("\n")
+
+if __name__ == "__main__":
+    main()
