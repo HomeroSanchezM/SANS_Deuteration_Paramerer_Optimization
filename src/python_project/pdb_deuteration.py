@@ -1,29 +1,132 @@
+#!/usr/bin/env python3
+"""
+PDB Deuteration Module
+======================
+
+Standalone module for deuterating protein structures in PDB format.
+
+This module can:
+- Convert hydrogen atoms (H) to deuterium (D) based on amino acid selection
+- Apply D2O exchange to labile hydrogens
+- Be used standalone via command line or imported as a library
+
+Usage (Standalone):
+    python pdb_deuteration.py input.pdb pdb_config.ini output.pdb
+    
+Usage (Library):
+    from pdb_deuteration import PdbDeuteration, AMINO_ACIDS
+    deuterator = PdbDeuteration("input.pdb")
+    deuterator.apply_deuteration(deuteration_vector, d2o_percent)
+    deuterator.save("output.pdb")
+
+Author: Your Name
+Date: 2025
+"""
+
 import sys
 import gemmi
-from dataclasses import dataclass
 import random
-from pathlib import Path
-from __init__ import *
 import logging
+import configparser
+from pathlib import Path
+from typing import List
+from dataclasses import dataclass
 
-# Configuration du logging
+
+# ============================================================================
+#                           LOGGING CONFIGURATION
+# ============================================================================
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(levelname)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+#                           AMINO ACID DEFINITIONS
+# ============================================================================
+
 @dataclass
+class AminoAcid:
+    """
+    Represents an amino acid with its nomenclature codes.
+
+    Attributes:
+        name (str): Full name of the amino acid (e.g., "Alanine")
+        code_3 (str): 3-letter code (e.g., "ALA")
+        code_1 (str): 1-letter code (e.g., "A")
+    """
+    name: str
+    code_3: str
+    code_1: str
+
+
+# List of standard amino acids
+AMINO_ACIDS = [
+    AminoAcid("Alanine", "ALA", "A"),
+    AminoAcid("Arginine", "ARG", "R"),
+    AminoAcid("Asparagine", "ASN", "N"),
+    AminoAcid("Aspartic acid", "ASP", "D"),
+    AminoAcid("Cysteine", "CYS", "C"),
+    AminoAcid("Glutamic acid", "GLU", "E"),
+    AminoAcid("Glutamine", "GLN", "Q"),
+    AminoAcid("Glycine", "GLY", "G"),
+    AminoAcid("Histidine", "HIS", "H"),
+    AminoAcid("Isoleucine", "ILE", "I"),
+    AminoAcid("Leucine", "LEU", "L"),
+    AminoAcid("Lysine", "LYS", "K"),
+    AminoAcid("Methionine", "MET", "M"),
+    AminoAcid("Phenylalanine", "PHE", "F"),
+    AminoAcid("Proline", "PRO", "P"),
+    AminoAcid("Serine", "SER", "S"),
+    AminoAcid("Threonine", "THR", "T"),
+    AminoAcid("Tryptophan", "TRP", "W"),
+    AminoAcid("Tyrosine", "TYR", "Y"),
+    AminoAcid("Valine", "VAL", "V")
+]
+
+# Dictionary for quick access by 3-letter code
+AA_DICT = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
+
+
+# ============================================================================
+#                           PDB DEUTERATION CLASS
+# ============================================================================
+
 class PdbDeuteration:
     """
-    Main class for deuteration of the PDB file.
+    Main class for deuteration of PDB files.
+    
+    This class handles:
+    - Loading PDB structures
+    - Converting H to D atoms based on amino acid selection
+    - Applying D2O exchange to labile hydrogens
+    - Saving modified structures
+    
+    Attributes:
+        pdb_path (Path): Path to the PDB file
+        structure (gemmi.Structure): Parsed PDB structure
+        stats (dict): Statistics about atoms in the structure
     """
+    
     def __init__(self, pdb_file: str):
-
+        """
+        Initialize the deuterator with a PDB file.
+        
+        Args:
+            pdb_file: Path to the PDB file
+            
+        Raises:
+            FileNotFoundError: If PDB file doesn't exist
+            RuntimeError: If PDB parsing fails
+        """
         self.pdb_path = Path(pdb_file)
 
         if not self.pdb_path.exists():
-            raise FileNotFoundError(f"PDB file not found: {pdb_path}")
+            raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+        
         try:
             self.structure = gemmi.read_structure(str(self.pdb_path))
             logger.info(f"Structure loaded: {self.pdb_path.name}")
@@ -32,7 +135,7 @@ class PdbDeuteration:
         except Exception as e:
             raise RuntimeError(f"Error while parsing PDB: {e}")
 
-        # Stats for validation
+        # Statistics for validation
         self.stats = {
             'total_atoms': 0,
             'hydrogen_atoms': 0,
@@ -43,7 +146,7 @@ class PdbDeuteration:
         self._count_atoms()
 
     def _count_atoms(self) -> None:
-        """Count all, H and D atoms for stats."""
+        """Count all atoms, H atoms, and D atoms for statistics."""
         for model in self.structure:
             for chain in model:
                 for residue in chain:
@@ -55,125 +158,119 @@ class PdbDeuteration:
                             self.stats['deuterium_atoms'] += 1
 
     def apply_deuteration(self,
-                          chromosome : Chromosome) -> None:
+                          deuteration_vector: List[bool],
+                          d2o_percent: float = 0.0) -> None:
         """
-        Apply the deuteration of the PDB file.
-        :param deuteration_vector: List of booleans representing deuterations
-        :param d2o_percent: percent of deuterations of labile H
+        Apply deuteration to the PDB structure.
+        
+        Args:
+            deuteration_vector: List of 20 booleans (one per amino acid)
+                               True = deuterate all non-labile H in this AA type
+            d2o_percent: Percentage of D2O for labile hydrogen exchange (0-100)
+            
+        Raises:
+            ValueError: If deuteration_vector doesn't have exactly 20 elements
+            ValueError: If d2o_percent is not in range [0, 100]
         """
-        # Validation des entrées
-        if len(chromosome.deuteration) != 20:
-            raise ValueError(f"aa_vector have to contain 20 elements, {len(aa_vector)} recieved")
+        # Input validation
+        if len(deuteration_vector) != 20:
+            raise ValueError(
+                f"deuteration_vector must contain 20 elements, "
+                f"{len(deuteration_vector)} received"
+            )
 
-        if not 0 <= chromosome.d2o <= 100:
-            raise ValueError(f"d2o_percent have to be between 0 and 100, {d2o_percent} recieved")
+        if not 0 <= d2o_percent <= 100:
+            raise ValueError(
+                f"d2o_percent must be between 0 and 100, "
+                f"{d2o_percent} received"
+            )
 
-        logger.info(f"Apply deuteration : D₂O = {chromosome.d2o:.2f}%")
-        logger.info(f"Deutered AA: {sum(chromosome.deuteration)}/20")
+        logger.info(f"Applying deuteration: D₂O = {d2o_percent:.2f}%")
+        logger.info(f"Deuterated amino acids: {sum(deuteration_vector)}/20")
 
-        # Parcours de la structure
+        # Iterate through the structure
         for model in self.structure:
             for chain in model:
                 for residue in chain:
-
                     residue_name = residue.name.strip().upper()
 
-                    # Vérifier si c'est un AA standard
+                    # Check if it's a standard amino acid
                     if residue_name not in AA_DICT:
-                        logger.debug(f"Résidu non-standard ignoré: {residue_name}")
+                        logger.debug(f"Non-standard residue ignored: {residue_name}")
                         continue
 
+                    # Determine lability for each atom in the residue
                     labile_vector = self._is_labile_hydrogen(residue)
-                    #print(labile_vector)
+                    
+                    # Get amino acid index
                     aa_index = AA_DICT[residue_name]
-                    should_deuterate = chromosome.deuteration[aa_index]
-                    #if should_deuterate:
-                        #print(f"=========Le residue {residue_name} va etre deuteré========= ")
-                    #else:
-                        #print(f"=========Les residue {residue_name} va pas etre deuteré=======")
+                    should_deuterate = deuteration_vector[aa_index]
 
-
-                    # Traitement de chaque atome du résidu
+                    # Process each atom in the residue
                     for atom, is_labile in zip(residue, labile_vector):
-                        #print(f"atom element name: {atom.element.name}") #que H (derniere colonne)
-                        #print(f"atom name: {atom.name}") # H1 (deuxieme colonne)
                         element = atom.element.name
 
+                        # Deuterate non-labile H if this AA type is selected
                         if should_deuterate:
                             if element == "H" and not is_labile:
-                                #print("L'atome dans le AA select va etre deutéré")
                                 self._convert_atom_H_to_D(atom)
-                                #print(f"New atom name: {atom.name}")
 
-                        #print(f"atom element name: {atom.element.name}")  # que H (derniere colonne)
-                        #print(f"atom name: {atom.name}")  # H1 (deuxieme colonne)
-
+                        # Apply D2O exchange to labile H
                         if is_labile:
-                            # H labile: appliquer selon D₂O%
-                            if random.random() * 100 < chromosome.d2o:
+                            if random.random() * 100 < d2o_percent:
                                 if element == "H":
-                                    #print("L'atome labile va etre deuteré")
                                     self._convert_atom_H_to_D(atom)
-                                    #print(f"New atom name: {atom.name}")
-                        element = atom.element.name
-                        # Ignorer les atomes qui ne sont ni H ni D
-                        #if element not in ("H"):
-                        #    continue
-
-                        #print(f"atom element name: {atom.element.name}")  # que H (derniere colonne)
-                        #print(f"atom name: {atom.name}")  # H1 (deuxieme colonne)
 
     def _convert_atom_H_to_D(self, atom: gemmi.Atom) -> None:
         """
-        Convertit un atome H en D (in-place).
-
+        Convert a hydrogen atom to deuterium (in-place).
+        
         Args:
-            atom: L'atome à modifier
+            atom: The atom to modify
         """
         if atom.element.name == "H":
             atom.name = atom.name.replace('H', 'D', 1)
-            # Mettre à jour l'élément en utilisant gemmi.Element
             atom.element = gemmi.Element("D")
 
     def _is_labile_hydrogen(self, residue: gemmi.Residue) -> List[bool]:
         """
-        Find for eatch atom of a residue if is a labile H or not
-        H have to be linked to O, N or S
-        :param residue: Residue to test
-        :return: a list of bool, True if the atom is labile
+        Determine for each atom in a residue if it's a labile hydrogen.
+        
+        A hydrogen is labile if it's bonded to O, N, or S.
+        This is approximated by checking if H follows an O/N/S atom.
+        
+        Args:
+            residue: Residue to analyze
+            
+        Returns:
+            List of booleans (one per atom in residue)
+            True if the atom is a labile hydrogen
         """
-        list_labile = []
-        #side_chain = True
+        labile_list = []
+        side_chain = False
+        
         for atom in residue:
-            #print(f"atom name: {atom.name}, element name {atom.element.name}")
             if atom.element.name in ("O", "N", "S"):
-                #print("les atomes suivant peuvent etre Labiles")
-                list_labile.append(False)
+                labile_list.append(False)
                 side_chain = True
-                #print("side chain devient True 1")
             else:
                 if atom.element.name == "H":
-                    if side_chain:
-                        #print("comme on est dans une chaine O, N ou S le H est labile")
-                        list_labile.append(True)
-                    else:
-                        #print("comme on est PAS dans une chaine, H est PAS labile")
-                        list_labile.append(False)
+                    labile_list.append(side_chain)
                 else:
-                    #print("les atomes ne peuvent PAS etre Labiles")
                     side_chain = False
-                    list_labile.append(False)
-        return list_labile
+                    labile_list.append(False)
+        
+        return labile_list
 
     def save(self, output_path: str) -> None:
         """
-        Sauvegarde la structure modifiée.
-
+        Save the modified structure to a PDB file.
+        
         Args:
-            output_path: Chemin du fichier de sortie
-
+            output_path: Path to the output file
+            
         Raises:
-            IOError: Si l'écriture échoue
+            IOError: If writing fails
         """
         try:
             output_path = Path(output_path)
@@ -183,28 +280,97 @@ class PdbDeuteration:
             raise IOError(f"Error while saving: {e}")
 
 
-if __name__ == "__main__":
+# ============================================================================
+#                           CONFIGURATION HANDLING
+# ============================================================================
 
-    if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} <fichier.pdb> [output.pdb]")
+def load_pdb_config(config_file: str) -> dict:
+    """
+    Load deuteration configuration from an INI file.
+    
+    Expected format:
+    [DEUTERATION]
+    input_pdb = path/to/input.pdb
+    output_pdb = path/to/output.pdb
+    d2o_percent = 50
+    
+    [AMINO_ACIDS]
+    ALA = true
+    ARG = false
+    ...
+    
+    Args:
+        config_file: Path to configuration file
+        
+    Returns:
+        Dictionary with configuration parameters
+    """
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    
+    # Read deuteration parameters
+    input_pdb = config.get("DEUTERATION", "input_pdb")
+    output_pdb = config.get("DEUTERATION", "output_pdb")
+    d2o_percent = config.getfloat("DEUTERATION", "d2o_percent", fallback=0.0)
+    
+    # Read amino acid selection
+    deuteration_vector = []
+    for aa in AMINO_ACIDS:
+        deuteration_vector.append(
+            config.getboolean("AMINO_ACIDS", aa.code_3, fallback=False)
+        )
+    
+    return {
+        'input_pdb': input_pdb,
+        'output_pdb': output_pdb,
+        'd2o_percent': d2o_percent,
+        'deuteration_vector': deuteration_vector
+    }
+
+
+# ============================================================================
+#                           MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """Main entry point for standalone usage."""
+    if len(sys.argv) < 4:
+        print("Usage: python pdb_deuteration.py <input.pdb> <config.ini> <output.pdb>")
+        print("\nAlternatively, use config.ini with paths specified inside:")
+        print("  python pdb_deuteration.py <config.ini>")
         sys.exit(1)
 
-    pdb_file = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else "output_deuterated.pdb"
+    if len(sys.argv) == 2:
+        # Config file only mode
+        config_file = sys.argv[1]
+        config = load_pdb_config(config_file)
+        input_pdb = config['input_pdb']
+        output_pdb = config['output_pdb']
+        d2o_percent = config['d2o_percent']
+        deuteration_vector = config['deuteration_vector']
+    else:
+        # Command line mode
+        input_pdb = sys.argv[1]
+        config_file = sys.argv[2]
+        output_pdb = sys.argv[3]
+        
+        config = load_pdb_config(config_file)
+        d2o_percent = config['d2o_percent']
+        deuteration_vector = config['deuteration_vector']
 
-    test_deuterator = PdbDeuteration(pdb_file)
+    # Load and deuterate
+    logger.info("=" * 60)
+    logger.info("PDB DEUTERATION")
+    logger.info("=" * 60)
+    
+    deuterator = PdbDeuteration(input_pdb)
+    deuterator.apply_deuteration(deuteration_vector, d2o_percent)
+    deuterator.save(output_pdb)
+    
+    logger.info("=" * 60)
+    logger.info("Deuteration completed successfully!")
+    logger.info("=" * 60)
 
-    #print(test_deuterator.stats)
 
-    # Ala(D) | Arg(H) | Asn(D) | Asp(D) | Cys(H) | Glu(H) | Gln(H) | Gly(D) | His(H) | Ile(D) | Leu(D) | Lys(H) | Met(D) | Phe(D) | Pro(H) | Ser(D) | Thr(D) | Trp(H) | Tyr(D) | Val(H) | D2O=47% |
-    test_deuteration_vector = [True, False, True, True, False, False, False, True, False, True, True, False, True, True,
-                               False, True, True, False, True, False]
-
-    test_chromosome = Chromosome(aa_list=AMINO_ACIDS,
-                                 modifiable=restrictions)
-    test_chromosome.deuteration = test_deuteration_vector
-    test_chromosome.d2o = 80
-
-    test_deuterator.apply_deuteration(test_chromosome)
-    #save pdb
-    test_deuterator.save(output_file)
+if __name__ == "__main__":
+    main()
