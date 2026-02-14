@@ -39,8 +39,6 @@ from typing import List, Tuple
 from dataclasses import dataclass
 
 
-
-
 # ============================================================================
 #                           ARGUMENT PARSING
 # ============================================================================
@@ -247,6 +245,7 @@ AMINO_ACIDS = [
 # Dictionary for quick access by 3-letter code
 AA_DICT = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
 
+restrictions = [True] * len(AMINO_ACIDS)
 # ============================================================================
 #                           CHROMOSOME CLASS
 # ============================================================================
@@ -701,7 +700,7 @@ def simulate_sans_evaluation(population: List[Chromosome]) -> List[Chromosome]:
 
 def sort_and_display_population(population: List[Chromosome], 
                                 population_size: int,
-                                generation: int = 0) -> List[Chromosome]:
+                                generation: int = 1) -> List[Chromosome]:
     """
     Sorts population by fitness and displays it with tier separators.
     
@@ -744,8 +743,8 @@ def run_genetic_algorithm(cfg: dict):
         d2o_variation_rate=cfg["d2o_variation_rate"]
     )
     
-    # Generate initial population (Generation 0)
-    print("\n>>> GENERATION 0 - Initial population creation")
+    # Generate initial population (Generation 1)
+    print("\n>>> GENERATION 1 - Initial population creation")
     population = generator.generate_initial_population()
     
     # Evaluate and display
@@ -753,11 +752,11 @@ def run_genetic_algorithm(cfg: dict):
     sorted_pop = sort_and_display_population(
         population, 
         cfg["population_size"], 
-        generation=0
+        generation=1
     )
     
     # Evolution through generations
-    for gen in range(1, cfg["generations"] + 1):
+    for gen in range(2, cfg["generations"]+1 ):
         print(f"\n{'='*80}")
         print(f">>> GENERATION {gen} - Population evolution")
         print('='*80)
