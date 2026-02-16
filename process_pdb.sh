@@ -62,7 +62,7 @@ if [ -d "$input_dir/ref" ]; then
         
         # Execute Pepsi-SANS command
         echo "Processing: $pdb_file -> $output_file"
-        ../Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 -o "$output_file"
+        ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 -o "$output_file"
     done
     echo ""
 fi

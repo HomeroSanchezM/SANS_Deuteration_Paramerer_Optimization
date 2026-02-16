@@ -1,0 +1,75 @@
+Version.......................................................... : 3.0 from May 2020
+Run at........................................................... : homero on Mon Jan 19 11:51:26 2026
+Command-line arguments........................................... : ./Pepsi-SANS ../tmp/8TW6.pdb -o ../tmp/ 
+========================Reading PDB file=========================
+PDB filename..................................................... : ../tmp/8TW6.pdb
+Number of chains read............................................ : 9
+Number of atoms read............................................. : 6242
+====================Analysing input PDB data=====================
+Geometric center at.............................................. : [163.393 A, 161.119 A, 153.699 A]
+Radius of gyration............................................... : 29.3581 A
+Maximum extension from the center................................ : 50.6636 A
+Number of residues............................................... : 827
+Chemical formula................................................. : C4006H6305N1008O1184S44
+Expected formula................................................. : C4184H6305N1052O1255S45 (different by 4.50%)
+Molecular weight of nonstandard residues......................... : 1.40291 kDa
+Total molecular weight........................................... : 92.8963 kDa
+Molecular concentration.......................................... : 1 mg/mL
+Intensity scaling................................................ : 6.48265e-11
+==================Computing the hydration layer==================
+Accessible solvent radius........................................ : 3 A
+Width of the hydration shell..................................... : 5 A
+Number of points in the hydration shell.......................... : 1734
+Radius of gyration of the hydration shell........................ : 40.2652 A
+Radius of gyration of the envelope............................... : 33.8353 A
+=========================Initialization==========================
+Angular units.................................................... : 1/A, q = 4pi sin(theta)/lambda
+Maximum scattering angle......................................... : 0.5
+Estimated resolution............................................. : 12.5664 A
+Number of points in the output curve............................. : 101
+Maximum number of processors..................................... : 16
+Number of processors online...................................... : 16
+Number of processors used........................................ : 16
+Estimated minimal expansion order of spherical harmonics......... : 20
+Actually used order of spherical harmonics....................... : 20
+====================Initializing form factors====================
+Number of X-ray atom groups used................................. : 69
+Number of neutron atom groups used............................... : 69
+====================Analysis of the structure====================
+Center of scattering length (in the COM frame)................... : [0.149513 A, -0.0189053 A, -0.320644 A]
+Radius of gyration (the diff. of sc. length)..................... : 29.4532 A
+==========Computing amplitudes for the hydration shell===========
+=========Computing atomic and excluded volume amplitudes=========
+Number of atomic groups.......................................... : 6242
+Average radius of the atomic group............................... : 1.61599 A
+Total scattering length.......................................... : 20954.3 fm
+Molecule SLD..................................................... : 1.89908 x10e-6/A^2
+Displaced (Dry) Volume........................................... : 110339 A^3
+======================Computing intensities======================
+Bulk SLD......................................................... : -0.560051 x10e-6/A^2
+Simulated contrast of the solvation shell........................ : 5.50898 %
+d_rho............................................................ : 0.0184 e/A^3
+r0............................................................... : 1.61599 A^3
+======================Computing intensities======================
+Bulk SLD......................................................... : -0.560051 x10e-6/A^2
+=====================Writing the output file=====================
+Output file name................................................. : ../tmp/
+Cannot open file for writing..................................... : ../tmp/
+=================================================================
+=========================== Timing : ============================
+=================================================================
+Parsing arguments................................................ : 0.000567535 s
+Reading PDB file................................................. : 0.00550718 s
+Analysing input PDB data......................................... : 0.00267141 s
+Computing the hydration layer.................................... : 0.00259244 s
+Initialization................................................... : 0.000242333 s
+Initializing form factors........................................ : 0.00439525 s
+Analysis of the structure........................................ : 0.000736448 s
+Computing amplitudes for the hydration shell..................... : 0.01787 s
+Computing atomic and excluded volume amplitudes.................. : 0.0951618 s
+Computing intensities............................................ : 0.000196485 s
+Computing intensities............................................ : 0.000202507 s
+Writing the output file.......................................... : 2.6501e-05 s
+.................................................................
+Total time : .................................................... : 0.13017 s
+=================================================================
