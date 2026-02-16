@@ -105,7 +105,7 @@ python fitness_evaluation.py <directory> [options]
 `<directory>` must contain `.dat` files and a `ref/` subfolder with the two reference curves.
 Outputs normalized fitness scores (one per line) and a summary.
 
-####Options:
+#### Options:
 
 - `--q-max` : q truncation limit (default: 0.3 Å⁻¹)
 
@@ -134,4 +134,50 @@ Used by `pdb_deuteration.py` :
 - `[DEUTERATION]` : `input_pdb`, `output_pdb`, `d2o_percent`
 
 - `[AMINO_ACIDS]` : which amino acid types are deuterated (list of 20 booleans)
+
+## Workflow details
+
+### Genetic algorithm
+
+#### 1. Chromosome representation
+
+- Binary vector of length 20 (one per amino acid type). `True` = non‑labile H are replaced by D.
+- Integer `d2o` (0-100)
+
+#### 2. Initialisation
+
+- Random deuteration vector (each modifiable AA has 50 % chance).
+- Random D₂O between 0 and 100.
+- Duplicates are rejected until population size is reached.
+
+#### 3. Fitness evaluation (via `fitness_evaluation.py`)
+
+- Simulated curve is scaled to match each reference (linear fit).
+- Area between scaled curve and reference is integrated (Simpson).
+- Raw fitness = `area_deut + area_prot`.
+- Normalization: `(raw - min) / (max - min)` → [0, 1].
+- Higher normalized fitness indicates a better match (larger area difference).
+
+#### 4. Selection (Tier 1)
+
+- Elite individuals (top `elitism`) are directly copied.
+- Remaining spots are filled by probabilistic selection (softmax temperature = 0.5) from the rest.
+
+#### 5.Mutation (Tier 2)
+
+- Pick a random parent from Tier 1.
+- Mutate 1, 2, or 3 randomly chosen modifiable amino acids (flip bit).
+- With 50 % chance, vary D₂O by ±d2o_variation_rate (clamped to 0–100).
+
+#### 6.Crossover (Tier 3)
+
+- Pick two random parents from Tier 1.
+- Choose a random cut point (1–19).
+- Child inherits first part from parent 1, second part from parent 2.
+- D₂O rule: if cut point is exactly at half of the sequence : random choice of one parent’s D₂O; else : D₂O of parent contributing the smaller fragment.
+
+#### 7.Population composition
+
+- Population size `N` must be divisible by 3.
+- Each generation: `N/3` from Tier 1 (elites + selected), `N/3` from mutation, `N/3` from crossover.
 
