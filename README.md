@@ -54,3 +54,84 @@ python generate_deuterated_pdbs.py <input.pdb> [options]
 | `--output_dir` | Output folder. Default: `<pdb_basename>_deuterated_pdbs` |
 | `--batch_script` | Path to the batch processing script. Default: `./process_pdb.sh` |
 
+#### Example:
+
+- Command line:
+
+```bash
+python generate_deuterated_pdbs.py myprotein.pdb -p 30 -e 3 -g 5 --seed 42
+```
+
+- Using a config file:
+
+```bash
+python generate_deuterated_pdbs.py myprotein.pdb --batch_script ./process_pdb.sh >
+```
+
+### 2. Standalone PDB deuteration
+
+Deuterate a single PDB file according to a specification:
+
+```bash
+python pdb_deuteration.py [config.ini] [options]
+```
+
+#### Examples:
+
+- Command line:
+
+```bash
+python pdb_deuteration.py -i input.pdb -o output.pdb --d2o 50 --ALA --GLY
+```
+Flags for each amino acid (`--ALA`, `--GLY`, …) activate deuteration of that type.
+Use `--all` to deuterate all amino acids.
+`--no-ALA` etc. can be used to exclude an AA when another flag (e.g., `--all`) is active.
+
+- Using a config file:
+
+```bash
+python pdb_deuteration.py pdb_config.ini
+```
+Command‑line arguments override values in the config file.
+
+### 3. Standalone Fitness Evaluation
+
+Evaluate fitness of existing `.dat` simulation files against references:
+
+```bash
+python fitness_evaluation.py <directory> [options]
+```
+
+`<directory>` must contain `.dat` files and a `ref/` subfolder with the two reference curves.
+Outputs normalized fitness scores (one per line) and a summary.
+
+####Options:
+
+- `--q-max` : q truncation limit (default: 0.3 Å⁻¹)
+
+- `--i0-threshold` : minimum I(0) ratio to pass filter (default: 0.2)
+
+- `--deut-ref`, `--prot-ref` : specify custom reference filenames inside `ref/`.
+
+## Configuration files
+
+### `config.ini` : Genetic Algorithm and Fitness Parameters
+
+Used by `generate_deuterated_pdbs.py` and `__init__.py` : 
+
+- `[POPULATION]` : `population_size`, `elitism`, `d2o_variation_rate`
+- `[GENETIC]` : `mutation_rate`, `crossover_rate`
+- `[EXECUTION]` : `generations`, `seed`
+- `[RESTRICTIONS]` : which amino acid types are modifiable by the GA (list of 20 booleans)
+- `[FITNESS]` : `q_max`, `i0_threshold`, `deut_ref`, `prot_ref`
+
+Command‑line arguments override values in the config file.
+
+### `pdb_config.ini` : Standalone PDB deuteration
+
+Used by `pdb_deuteration.py` :
+
+- `[DEUTERATION]` : `input_pdb`, `output_pdb`, `d2o_percent`
+
+- `[AMINO_ACIDS]` : which amino acid types are deuterated (list of 20 booleans)
+
