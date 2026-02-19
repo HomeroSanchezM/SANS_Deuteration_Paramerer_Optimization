@@ -59,15 +59,25 @@ if [ -d "$input_dir/ref" ]; then
         
         # Build the output path
         output_file="$output_dir/ref/${basename}.dat"
+
+        # Determine --d2o flag based on file name
+        if [[ "$basename" == *"_total_deuteration" ]]; then
+            d2o_flag="--d2o 1"
+        elif [[ "$basename" == *"_total_protonation" ]]; then
+            d2o_flag="--d2o 0"
+        else
+            d2o_flag=""
+        fi
         
         # Execute Pepsi-SANS command
-        echo "Processing: $pdb_file -> $output_file"
-        ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 -o "$output_file"
+        echo "Processing: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
+        ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 5 $d2o_flag -o "$output_file"
     done
     echo ""
 fi
 
 # Process files at the root of the input folder
+# Expected format: genXX_chrXXX_d2oXX_deutAAXX.pdb
 echo "=== Processing main files ==="
 for pdb_file in "$input_dir"/*.pdb; do
     # Check if .pdb files exist
@@ -81,10 +91,20 @@ for pdb_file in "$input_dir"/*.pdb; do
     
     # Build the output path
     output_file="$output_dir/${basename}.dat"
+
+    # Extract the d2o percentage from the filename (e.g., d2o24 -> 0.24)
+    if [[ "$basename" =~ _d2o([0-9]+)_ ]]; then
+        d2o_int="${BASH_REMATCH[1]}"
+        # Convert integer percentage to decimal (e.g., 24 -> 0.24)
+        d2o_flag="--d2o 0.$d2o_int"
+    else
+        echo "Warning: could not extract d2o value from filename '$basename', skipping --d2o flag"
+        d2o_flag=""
+    fi
     
     # Execute Pepsi-SANS command
-    echo "Processing: $pdb_file -> $output_file"
-    ../Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 -o "$output_file"
+    echo "Processing: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
+    ../Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 $d2o_flag -o "$output_file"
 done
 
 echo ""
