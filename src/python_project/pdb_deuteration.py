@@ -429,7 +429,7 @@ class PdbDeuteration:
 
     def apply_deuteration(self,
                           deuteration_vector: List[bool],
-                          d2o_percent: float = 0.0) -> None:
+                          d2o_percent: int = 0) -> None:
         """
         Apply deuteration to the PDB structure.
         
@@ -455,7 +455,7 @@ class PdbDeuteration:
                 f"{d2o_percent} received"
             )
 
-        logger.info(f"Applying deuteration: D₂O = {d2o_percent:.2f}%")
+        logger.info(f"Applying deuteration: D₂O = {d2o_percent}%")
         deuterated_aas = [aa.code_3 for aa, deut in zip(AMINO_ACIDS, deuteration_vector) if deut]
         if deuterated_aas:
             logger.info(f"Deuterated amino acids: {', '.join(deuterated_aas)}")

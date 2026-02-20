@@ -64,7 +64,7 @@ Usage example:
 
     # Optional config file (positional)
     parser.add_argument(
-        "config",
+        "--config",
         nargs="?",
         help="Path to config.ini file"
     )
@@ -308,8 +308,16 @@ class Chromosome:
         - New value: current ± [0, variation_range]
         - Constrained to [0, 100]
         """
-        variation = random.randint(-variation_range, variation_range)
-        self.d2o = max(0, min(100, self.d2o + variation))
+        # Compute the maximum possible variation downwards and upwards
+        max_down = min(variation_range, self.d2o)
+        max_up = min(variation_range, 100 - self.d2o)
+        # Choose a symmetric variation within the possible interval
+        variation = random.randint(-max_down, max_up)
+        self.d2o += variation
+        # No need to clamp because bounds are already respected
+
+        #variation = random.randint(-variation_range, variation_range)
+        #self.d2o = max(0, min(100, self.d2o + variation))
 
     def __eq__(self, other: 'Chromosome') -> bool:
         """
