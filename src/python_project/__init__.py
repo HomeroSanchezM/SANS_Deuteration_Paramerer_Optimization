@@ -38,6 +38,8 @@ import configparser
 from typing import List, Tuple
 from dataclasses import dataclass
 
+from Bio.PDB.ic_data import primary_angles
+
 
 # ============================================================================
 #                           ARGUMENT PARSING
@@ -293,9 +295,17 @@ class Chromosome:
         - Each modifiable AA has 50% chance to be deuterated
         """
         self.deuteration = [False] * len(self.aa_list) # All non-deuterated by default
-        for i in range(len(self.aa_list)):
-            if self.modifiable[i]:
-                self.deuteration[i] = random.choice([True, False])
+        nb_to_deuterate = random.randint(0, 20)
+        print(f"we will deuterate {nb_to_deuterate} amino acids")
+        for k in range(nb_to_deuterate):
+            while True:
+                i = random.randint(0, 19)
+                #print(i)
+                #print(self.modifiable[i])
+                if self.modifiable[i] == True and self.deuteration[i] == False:
+                    #print("end loop")
+                    break
+            self.deuteration[i] = True
 
     def modify_d2o(self, variation_range: int = 10) -> None:
         """
