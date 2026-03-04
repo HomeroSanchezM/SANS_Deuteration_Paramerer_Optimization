@@ -448,7 +448,6 @@ class PdbDeuteration:
                 f"deuteration_vector must contain 20 elements, "
                 f"{len(deuteration_vector)} received"
             )
-
         if not 0 <= d2o_percent <= 100:
             raise ValueError(
                 f"d2o_percent must be between 0 and 100, "
@@ -457,7 +456,9 @@ class PdbDeuteration:
 
         logger.info(f"Applying deuteration: D₂O = {d2o_percent}%")
         deuterated_aas = [aa.code_3 for aa, deut in zip(AMINO_ACIDS, deuteration_vector) if deut]
-        if deuterated_aas:
+        if deuterated_aas == len(AMINO_ACIDS):
+            logger.info(f"Deuteration applied to all amino acids")
+        elif deuterated_aas:
             logger.info(f"Deuterated amino acids: {', '.join(deuterated_aas)}")
         else:
             logger.info("No amino acids selected for deuteration (non-labile H will remain H)")

@@ -25,6 +25,7 @@ A higher fitness score (closer to 1) indicates a better match.
 import numpy as np
 import argparse
 import os
+import re
 import glob
 import logging
 from scipy.interpolate import griddata
@@ -64,6 +65,12 @@ Directory structure:
         ├── *deuterated.dat      # Deuterated reference
         └── *protonated.dat      # Protonated reference
 
+Curve validity check:
+  A curve is accepted only if ratio = Imax / background > 0.01
+  where background = -0.0117 * d2o_percent + 1.25
+  and d2o_percent is extracted from the filename
+  (e.g. genXX_chrXXX_d2o42_deutAAXX.dat -> D2O = 42%).
+
 Examples:
   # Basic usage (assumes default naming in ref/)
   python fitness_evaluation.py /path/to/simulations
@@ -71,8 +78,8 @@ Examples:
   # Specify custom reference filenames
   python fitness_evaluation.py /path/to/simulations --deut-ref D2O.dat --prot-ref H2O.dat
 
-  # Adjust q-range and I0 threshold
-  python fitness_evaluation.py /path/to/simulations --q-max 0.35 --i0-threshold 0.15
+  # Adjust q-range and ratio threshold
+  python fitness_evaluation.py /path/to/simulations --q-max 0.35 --ratio-threshold 0.05
 
   # Quiet mode (minimal output)
   python fitness_evaluation.py /path/to/simulations --quiet
@@ -95,13 +102,13 @@ Examples:
         '--deut-ref',
         type=str,
         default=None,
-        help='Filename of deuterated reference inside ref/ (default: auto-detect with "*deuterated.dat")'
+        help='Filename of deuterated reference inside ref/ (default: auto-detect with "*deuteration.dat")'
     )
     ref_group.add_argument(
         '--prot-ref',
         type=str,
         default=None,
-        help='Filename of protonated reference inside ref/ (default: auto-detect with "*protonated.dat")'
+        help='Filename of protonated reference inside ref/ (default: auto-detect with "*protonation.dat")'
     )
 
     # ==================== EVALUATION PARAMETERS ====================
@@ -113,10 +120,17 @@ Examples:
         help='Maximum q value for truncation (default: 0.3 Å⁻¹)'
     )
     param_group.add_argument(
+        '--ratio-threshold',
+        type=float,
+        default=0.01,
+        help='Minimum Imax/background ratio to accept a curve (default: 0.01)'
+    )
+    # Kept for backward compatibility with older call sites, but no longer used
+    param_group.add_argument(
         '--i0-threshold',
         type=float,
-        default=0.2,
-        help='Minimum I(0) as fraction of protonated I(0) to pass filter (default: 0.2)'
+        default=None,
+        help=argparse.SUPPRESS
     )
 
     # ==================== OUTPUT CONTROL ====================
@@ -129,7 +143,7 @@ Examples:
     output_group.add_argument(
         '-q', '--quiet',
         action='store_true',
-        help='Suppress all non‑essential output (only print final fitness array)'
+        help='Suppress all non-essential output (only print final fitness array)'
     )
 
     args = parser.parse_args()
@@ -362,19 +376,80 @@ def calculate_area_difference(q, I1, I2):
     return area
 
 
-def i0_threshold_check(I_prot, I, threshold_ratio):
+# ============================================================================
+#                     RATIO CHECK (replaces i0_threshold_check)
+# ============================================================================
+
+def extract_d2o_from_filename(filename):
     """
-    Check if I[0] >= threshold_ratio * I_prot[0].
+    Extract the D2O percentage from a curve filename.
+
+    Expected filename pattern: genXX_chrXXX_d2oYY_deutAAZZ.dat (or .out)
+    Example: gen01_chr003_d2o42_deutAA05.dat -> returns 42
 
     Args:
-        I_prot (np.array): Protonated reference intensity
-        I (np.array): Simulated intensity
-        threshold_ratio (float): Minimum ratio
+        filename (str): Basename or full path of the curve file
 
     Returns:
-        bool: True if condition met
+        int or None: D2O percentage, or None if not found in filename
     """
-    return I[0] >= threshold_ratio * I_prot[0]
+    basename = os.path.basename(filename)
+    match = re.search(r'_d2o(\d+)', basename)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def compute_incoherent_background(d2o_percent):
+    """
+    Compute the incoherent scattering background for a given D2O percentage.
+
+    Formula: background = -0.0117 * d2o_percent + 1.25
+
+    Args:
+        d2o_percent (int or float): D2O percentage (0-100)
+
+    Returns:
+        float: Background value
+    """
+    return -0.0117 * d2o_percent + 1.25
+
+
+def ratio_check(I, d2o_percent, threshold=0.01):
+    """
+    Check if a curve is valid based on the Imax / background ratio.
+
+    A curve is accepted if:
+        ratio = Imax / background > threshold
+    where:
+        Imax       = maximum value of I (not necessarily I[0])
+        background = -0.0117 * d2o_percent + 1.25
+
+    Args:
+        I (np.array): Simulated intensity array
+        d2o_percent (int or float): D2O percentage extracted from the filename
+        threshold (float): Minimum ratio to accept the curve (default: 0.01)
+
+    Returns:
+        bool: True if the curve passes the ratio check, False otherwise
+    """
+    background = compute_incoherent_background(d2o_percent)
+    if background <= 0:
+        logger.warning(
+            f"Non-positive background ({background:.4f}) for D2O={d2o_percent}%; "
+            f"curve rejected"
+        )
+        return False
+
+    I_max = np.max(I)
+    ratio = I_max / background
+
+    logger.debug(
+        f"Ratio check: Imax={I_max:.4e}, background={background:.4f}, "
+        f"ratio={ratio:.4f}, threshold={threshold}"
+    )
+
+    return ratio > threshold
 
 
 def scaling_and_compare(q, I, I_deut, I_prot, q_max):
@@ -410,13 +485,19 @@ def scaling_and_compare(q, I, I_deut, I_prot, q_max):
     # 5. Scale and compare with protonated reference
     I_scaled_prot, _, _, _ = scale_curves(q_trunc, I_prot_regrid, I_trunc)
     area_prot = calculate_area_difference(q_trunc, I_scaled_prot, I_prot_regrid)
+    # to compare to the 2 curves return area_deut + area_prot
+    return area_prot
 
-    return area_deut + area_prot
 
-
-def fitness(q, I, I_deut, I_prot, q_max, i0_threshold):
+def fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold=0.01):
     """
     Compute raw fitness score (area difference) for a single curve.
+
+    The curve is validated by checking that ratio = Imax / background > ratio_threshold,
+    where background = -0.0117 * d2o_percent + 1.25 and d2o_percent is extracted
+    from the filename (pattern: genXX_chrXXX_d2oYY_deutAAZZ.dat or .out).
+    If d2o_percent cannot be determined from the filename, the ratio check is skipped
+    and the curve is accepted.
 
     Args:
         q (np.array): q values
@@ -424,14 +505,30 @@ def fitness(q, I, I_deut, I_prot, q_max, i0_threshold):
         I_deut (np.array): Deuterated reference
         I_prot (np.array): Protonated reference
         q_max (float): q truncation limit
-        i0_threshold (float): Minimum I(0) ratio
+        file_path (str): Path to the curve file (used to extract D2O percentage)
+        ratio_threshold (float): Minimum Imax/background ratio (default: 0.01)
 
     Returns:
-        float: Raw area sum, or 0.0 if I0 threshold fails
+        float: Raw area sum, or 0.0 if ratio check fails
     """
-    if not i0_threshold_check(I_prot, I, i0_threshold):
-        logger.debug(f"I0 threshold failed: I[0]={I[0]:.4e}, required ≥ {i0_threshold*I_prot[0]:.4e}")
-        return 0.0
+    d2o_percent = extract_d2o_from_filename(file_path)
+
+    if d2o_percent is None:
+        logger.debug(
+            f"Could not extract D2O from filename '{os.path.basename(file_path)}'; "
+            f"ratio check skipped, curve accepted by default"
+        )
+    else:
+        if not ratio_check(I, d2o_percent, threshold=ratio_threshold):
+            background = compute_incoherent_background(d2o_percent)
+            I_max = np.max(I)
+            ratio = I_max / background if background > 0 else 0.0
+            logger.debug(
+                f"Ratio check failed for '{os.path.basename(file_path)}': "
+                f"Imax={I_max:.4e}, background={background:.4f}, "
+                f"ratio={ratio:.4f} < threshold={ratio_threshold}"
+            )
+            return 0.0
 
     return scaling_and_compare(q, I, I_deut, I_prot, q_max)
 
@@ -451,7 +548,7 @@ def normalize_fitness(fitness_values):
     if len(arr) == 0:
         return arr
 
-    # Identify zero scores (failed I0 threshold)
+    # Identify zero scores (failed ratio check)
     zero_mask = arr == 0.0
     non_zero = arr[~zero_mask]
 
@@ -475,7 +572,7 @@ def normalize_fitness(fitness_values):
 # ============================================================================
 
 def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
-                                q_max=0.3, i0_threshold=0.2):
+                                q_max=0.3, i0_threshold=None, ratio_threshold=0.01):
     """
     Evaluate fitness for all .dat files in the given directory.
 
@@ -484,10 +581,11 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
         deut_ref (str, optional): Exact deuterated reference filename
         prot_ref (str, optional): Exact protonated reference filename
         q_max (float): q truncation limit
-        i0_threshold (float): Minimum I(0) ratio
+        i0_threshold (float, optional): Deprecated, kept for backward compatibility (ignored)
+        ratio_threshold (float): Minimum Imax/background ratio to accept a curve
 
     Returns:
-        tuple: (normalized_fitness, file_paths)
+        tuple: (raw_fitness_scores, file_paths)
     """
     # --- Locate data files ---
     sim_files = find_dat_files(directory)
@@ -509,7 +607,7 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
     for file_path in sim_files:
         try:
             q, I = parse_sans_file(file_path)
-            score = fitness(q, I, I_deut, I_prot, q_max, i0_threshold)
+            score = fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold)
             raw_scores.append(score)
             valid_files.append(file_path)
             logger.debug(f"{os.path.basename(file_path)}: raw score = {score:.6e}")
@@ -521,7 +619,9 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
     # --- Normalize ---
     normalized = normalize_fitness(raw_scores)
 
-    return normalized, valid_files
+    #return normalized, valid_files
+    #test returning only raw scores
+    return np.array(raw_scores, dtype=float), valid_files
 
 
 def main():
@@ -533,7 +633,7 @@ def main():
             deut_ref=args.deut_ref,
             prot_ref=args.prot_ref,
             q_max=args.q_max,
-            i0_threshold=args.i0_threshold
+            ratio_threshold=args.ratio_threshold
         )
     except (NotADirectoryError, FileNotFoundError, ValueError) as e:
         logger.error(f"Evaluation failed: {e}")
@@ -546,20 +646,20 @@ def main():
         print("=" * 60)
         print(f"Directory: {args.directory}")
         print(f"Q max: {args.q_max:.3f} Å⁻¹")
-        print(f"I0 threshold: {args.i0_threshold:.2f} × I0(prot)")
+        print(f"Ratio threshold (Imax/background): {args.ratio_threshold}")
         print(f"Files evaluated: {len(fitness_scores)}")
-        print(f"Files passing I0 threshold: {np.sum(fitness_scores > 0)}/{len(fitness_scores)}")
-        print(f"Best fitness: {np.max(fitness_scores):.6f}")
+        print(f"Files passing ratio check: {np.sum(fitness_scores > 0)}/{len(fitness_scores)}")
+        print(f"Best fitness: {np.max(fitness_scores):.8f}")
         if len(fitness_scores) > 0 and np.max(fitness_scores) > 0:
             best_idx = np.argmax(fitness_scores)
             print(f"Best file: {os.path.basename(sim_files[best_idx])}")
-        print(f"Average fitness: {np.mean(fitness_scores):.6f}")
+        print(f"Average fitness: {np.mean(fitness_scores):.8f}")
         print("=" * 60 + "\n")
 
     # Always print the normalized fitness array (machine-readable)
     # Format: one float per line
     for score in fitness_scores:
-        print(f"{score:.6f}")
+        print(f"{score:.8f}")
 
 
 if __name__ == "__main__":
