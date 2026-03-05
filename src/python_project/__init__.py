@@ -304,6 +304,8 @@ class Chromosome:
         deuteration (List[bool]): Deuteration vector (True = deuterated)
         d2o (int): Percentage of D2O (0-100)
         fitness (float): Fitness score (set by SANS evaluation)
+        H (int): number of H atoms (set after pdb deuteration)
+        D (int): number of D atoms (set after pdb deuteration)
         generation (int): Generation in which this chromosome was first created.
                           Preserved when copied to a new generation (tier1).
         index (int): Index (1-based) of this chromosome in the population of its
@@ -332,6 +334,8 @@ class Chromosome:
         else:
             self.d2o = random.choice(self.fixed_d2o)
         self.fitness = 0.0  # Will be set after SANS evaluation
+        self.H = 0 # Will be set after pdb deuterations
+        self.D = 0 # Will be set after pdb deuterations
 
     def copy(self) -> 'Chromosome':
         """
@@ -345,6 +349,8 @@ class Chromosome:
         new_chrom.deuteration = self.deuteration[:]
         new_chrom.d2o = self.d2o
         new_chrom.fitness = self.fitness
+        new_chrom.H = self.H
+        new_chrom.D = self.D
         return new_chrom
 
     def randomize_deuteration(self) -> None:
@@ -538,7 +544,7 @@ class PopulationGenerator:
             TIER 2 - MUTATION (n/3 chromosomes)
             - Random parent from tier 1
             - Mutate 1, 2, or 3 AA
-            - 50% chance: mutate D2O
+            - guassian probability: mutate D2O
             → Assigned generation=new_generation, index = tier_size+1 .. 2*tier_size
 
             TIER 3 - CROSSOVER (n/3 chromosomes)
@@ -581,7 +587,7 @@ class PopulationGenerator:
             chrom.index = tier_size + i + 1          # indices tier_size+1 .. 2*tier_size
 
         # TIER 3: Crossover (n/3) — new chromosomes
-        tier3 = self._crossover_tier3(tier1)
+        tier3 = self._crossover_tier3(tier1, tier2)
         for i, chrom in enumerate(tier3):
             chrom.generation = new_generation
             chrom.index = 2 * tier_size + i + 1      # indices 2*tier_size+1 .. 3*tier_size
@@ -627,22 +633,22 @@ class PopulationGenerator:
         - (n/3 - e) probabilistic — copies with original generation/index
         """
         tier_size = self.population_size // 3
-        selectionnes = []
+        selects = []
 
         # Part A: Elitism
         for i in range(self.elitism):
-            selectionnes.append(sorted_population[i].copy())
+            selects.append(sorted_population[i].copy())
 
         # Part B: Probabilistic selection
-        nombre_a_selectionner = tier_size - self.elitism
-        if nombre_a_selectionner > 0:
-            pop_a_selectionee = sorted_population[self.elitism:]
-            probas = self._calcule_selection_probabilities(pop_a_selectionee)
-            for _ in range(nombre_a_selectionner):
-                selected = random.choices(pop_a_selectionee, weights=probas, k=1)[0]
-                selectionnes.append(selected.copy())
-
-        return selectionnes
+        number_to_select = tier_size - self.elitism
+        if number_to_select > 0:
+            pop_to_select = sorted_population[self.elitism:]
+            prob = self._calcule_selection_probabilities(pop_to_select)
+            while len(selects) < tier_size:
+                selected = random.choices(pop_to_select, weights=prob, k=1)[0]
+                if selected not in selects:
+                    selects.append(selected.copy())
+        return selects
 
     def _mutation_tier2(self,
                         selectionnes: List[Chromosome],
@@ -677,7 +683,7 @@ class PopulationGenerator:
 
         return mutes
 
-    def _crossover_tier3(self, selectionnes: List[Chromosome]) -> List[Chromosome]:
+    def _crossover_tier3(self, selectionnes: List[Chromosome], mutes: List[Chromosome]) -> List[Chromosome]:
         """
         TIER 3: Generates n/3 chromosomes by crossover.
         generation/index are assigned by the caller after this method returns.
@@ -702,7 +708,8 @@ class PopulationGenerator:
             else:
                 enfant.d2o = parent2.d2o
 
-            crossovers.append(enfant)
+            if self._unique_check(enfant, crossovers + mutes + selectionnes):
+                crossovers.append(enfant)
 
         return crossovers
 

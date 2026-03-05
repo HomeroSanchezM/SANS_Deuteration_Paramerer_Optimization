@@ -394,6 +394,40 @@ def create_reference_pdbs(pdb_file: str,
     prot_pdb.save(str(prot_path))
     logger.info(f"  Protonated reference : {prot_path.name}")
 
+def create_protonated_reference_pdbs(pdb_file: str,
+                           ref_dir: Path,
+                           restrictions: List[bool]) -> None:
+    """Create protonated in D2O fully-protonated (100% H2O) reference PDB files."""
+    logger.info(">>> Creating reference PDBs (protonated in D2O / protonated in H2O)")
+    no_restrictions = [True] * len(AMINO_ACIDS)
+
+    # Protonated in D2O
+    deut_chrom = Chromosome(AMINO_ACIDS, no_restrictions, fixed_d2o=None)
+    deut_chrom.deuteration = [False] * len(AMINO_ACIDS)
+    deut_chrom.d2o = 100
+    deut_pdb = PdbDeuteration(pdb_file)
+    deut_pdb.apply_deuteration(deut_chrom.deuteration, deut_chrom.d2o)
+    print("For protonated in D2O there are :")
+    print(f"{deut_pdb.stats['hydrogen_atoms']} hydrogen atoms")
+    print(f"{deut_pdb.stats['deuterium_atoms']} deuterum atoms")
+    print(f"The %D is {(deut_pdb.stats['deuterium_atoms']/(deut_pdb.stats['deuterium_atoms']+deut_pdb.stats['hydrogen_atoms']))*100:.2f}")
+    deut_path = ref_dir / f"{Path(pdb_file).stem}_total_deuteration.pdb"
+    deut_pdb.save(str(deut_path))
+    logger.info(f"  Deuterated reference : {deut_path.name}")
+
+    # Fully protonated
+    prot_chrom = Chromosome(AMINO_ACIDS, no_restrictions, fixed_d2o=None)
+    prot_chrom.deuteration = [False] * len(AMINO_ACIDS)
+    prot_chrom.d2o = 0
+    prot_pdb = PdbDeuteration(pdb_file)
+    prot_pdb.apply_deuteration(prot_chrom.deuteration, prot_chrom.d2o)
+    print("For protonated in H2O there are :")
+    print(f"{prot_pdb.stats['hydrogen_atoms']} hydrogen atoms")
+    print(f"{prot_pdb.stats['deuterium_atoms']} deuterum atoms")
+    print(f"The %D is {(prot_pdb.stats['deuterium_atoms'] / (prot_pdb.stats['deuterium_atoms'] + prot_pdb.stats['hydrogen_atoms'])) * 100:.2f}")
+    prot_path = ref_dir / f"{Path(pdb_file).stem}_total_protonation.pdb"
+    prot_pdb.save(str(prot_path))
+    logger.info(f"  Protonated reference : {prot_path.name}")
 
 def generate_pdbs_for_chromosomes(pdb_file: str,
                                    chromosomes: List[Chromosome],
@@ -420,6 +454,12 @@ def generate_pdbs_for_chromosomes(pdb_file: str,
         try:
             deuterator = PdbDeuteration(pdb_file)
             deuterator.apply_deuteration(chrom.deuteration, chrom.d2o)
+            chrom.H = deuterator.stats['hydrogen_atoms']
+            chrom.D = deuterator.stats['deuterium_atoms']
+            print("For protonated in D2O there are :")
+            print(f"{deuterator.stats['hydrogen_atoms']} hydrogen atoms")
+            print(f"{deuterator.stats['deuterium_atoms']} deuterium atoms")
+            print(f"The %D is {(deuterator.stats['deuterium_atoms'] / (deuterator.stats['deuterium_atoms'] + deuterator.stats['hydrogen_atoms'])) * 100:.2f}")
             deuterator.save(str(out_path))
             generated.append(str(out_path))
             logger.debug(f"  Written: {filename}")
@@ -597,7 +637,9 @@ def cleanup_non_tier1_files(output_dir: Path,
         primus_dir:       Directory that contains SANS .dat/.out files (may be None).
         tier1_population: Chromosomes selected for tier-1 of the *new* generation.
     """
+    tier1_stems: Set[str] = {print(Path(get_pdb_filename(c)).stem) for c in tier1_population}
     tier1_stems: Set[str] = {Path(get_pdb_filename(c)).stem for c in tier1_population}
+
 
     # --- PDB files ---
     removed_pdb = 0
@@ -638,13 +680,16 @@ def display_population_summary(population: List[Chromosome],
                                 sorted_indices: List[int],
                                 generation: int) -> None:
     """Log a short summary of the top-3 chromosomes using their original filenames."""
-    top_n = min(3, len(sorted_indices))
+    top_n = min(10, len(sorted_indices))
     logger.info(f"\n>>> Generation {generation} — top {top_n} chromosome(s):")
     for rank in range(top_n):
         chrom = population[sorted_indices[rank]]
         logger.info(
             f"  {rank + 1:2d}. {get_pdb_filename(chrom)}"
             f"  fitness={chrom.fitness:.6f}"
+            f"  H={chrom.H}"
+            f"  D={chrom.D}"
+            f"  %D={(chrom.D/(chrom.H + chrom.D))*100 :.2f}"
             f"  (created gen{chrom.generation:02d} idx{chrom.index:03d})"
         )
 
@@ -840,7 +885,11 @@ def main():
     best_summary_path = output_dir / "best_fitness_summary.csv"
 
     # ---------- Create reference PDBs ----------
-    create_reference_pdbs(str(pdb_path), ref_dir, cfg['restrictions'])
+    #fully deuterated / protonated
+    #create_reference_pdbs(str(pdb_path), ref_dir, cfg['restrictions'])
+
+    #protonated in D2O / protonated in H2O
+    create_protonated_reference_pdbs(str(pdb_path), ref_dir, cfg['restrictions'])
 
     # ---------- Initialise population generator ----------
     generator = PopulationGenerator(
@@ -907,7 +956,7 @@ def main():
         #     pre-sorted list makes the tier-1 selection deterministic with
         #     respect to ties)
         # ------------------------------------------------------------------
-        sorted_population = [population[i] for i in sorted_indices]
+        #sorted_population = [population[i] for i in sorted_indices]
 
         # ------------------------------------------------------------------
         # 2. Generate new population
@@ -916,7 +965,8 @@ def main():
         #    • tier3 (2*tier_size..3*tier_size-1): new, gen=gen, idx=2*tier_size+1..3*tier_size
         # ------------------------------------------------------------------
         new_population = generator.generate_next_generation(
-            previous_population=sorted_population,
+            #previous_population=sorted_population,
+            previous_population=population,
             mutation_rate=cfg['mutation_rate'],
             crossover_rate=cfg['crossover_rate'],
             d2o_variation_rate=cfg['d2o_variation_rate'],
@@ -926,7 +976,6 @@ def main():
 
         tier1 = new_population[:tier_size]
         tier2_and_3 = new_population[tier_size:]
-
         # ------------------------------------------------------------------
         # 3. Identify tier-1 files to keep; remove all others
         # ------------------------------------------------------------------
@@ -998,6 +1047,9 @@ def main():
     logger.info(f"  File           : {get_pdb_filename(best)}")
     logger.info(f"  D2O            : {best.d2o}%")
     logger.info(f"  Deuterated AAs : {sum(best.deuteration)}/20")
+    logger.info(f"  H              : {best.H}")
+    logger.info(f"  D              : {best.D}")
+    logger.info(f"  %D            : {(best.D /( best.H + best.D ))*100:.2f}%")
     logger.info(f"  Fitness        : {best.fitness:.6f}")
     logger.info(
         f"  Created at     : generation {best.generation}, "
