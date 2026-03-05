@@ -89,6 +89,14 @@ Usage example:
         help='Maximum D2O variation amplitude. Default: 50'
     )
 
+    parser.add_argument(
+        '--d2o',
+        type=int,
+        nargs='+',  # accept one or more values
+        default=None,
+        help='If defined, blocks the d2o variation for a given list of d2o values'
+    )
+
     # Genetic parameters
     parser.add_argument(
         '-m', '--mutation_rate',
@@ -114,6 +122,7 @@ Usage example:
         type=int,
         help='Random seed for reproducibility. Default: None (random)'
     )
+
 
     args = parser.parse_args()
 
@@ -160,12 +169,43 @@ def validate_config(cfg):
             f"restrictions length ({len(cfg['restrictions'])}) "
             f"!= number of amino acids ({len(AMINO_ACIDS)})"
         )
+    # D2O restrictions
+    d2o = cfg.get("d2o")
+
+    if d2o is not None:
+        if not isinstance(d2o, list):
+            raise TypeError("d2o must be a list of integers or None")
+
+        if len(d2o) == 0:
+            raise ValueError("d2o list cannot be empty")
+
+        for value in d2o:
+            if not isinstance(value, int):
+                raise TypeError(f"d2o value {value} is not an integer")
+
+            if not (0 <= value <= 100):
+                raise ValueError(
+                    f"d2o value {value} out of range [0, 100]"
+                )
 
 
 def load_config_ini(path: str):
     """Loads configuration from a .ini file."""
     config = configparser.ConfigParser()
     config.read(path)
+
+    # Parse D2O
+    raw_d2o = config.get("D2O", "d2o", fallback="None").strip()
+
+    if raw_d2o.lower() == "none":
+        d2o_list = None
+    else:
+        try:
+            d2o_list = [int(x) for x in raw_d2o.split()]
+        except ValueError:
+            raise ValueError(
+                f"Invalid D2O list in config file: {raw_d2o}"
+            )
 
     cfg = {
         "population_size": config.getint("POPULATION", "population_size"),
@@ -178,7 +218,8 @@ def load_config_ini(path: str):
         "restrictions": [
             config.getboolean("RESTRICTIONS", aa.code_3)
             for aa in AMINO_ACIDS
-        ]
+        ],
+        "d2o": d2o_list,
     }
     return cfg
 
@@ -197,7 +238,8 @@ def merge_config(cli_args, ini_cfg=None):
         "crossover_rate": pick(cli_args.crossover_rate, ini_cfg.get("crossover_rate"), 0.8),
         "generations": pick(cli_args.generations, ini_cfg.get("generations"), 1),
         "seed": pick(cli_args.seed, ini_cfg.get("seed"), None),
-        "restrictions": ini_cfg.get("restrictions", [True] * len(AMINO_ACIDS))
+        "restrictions": ini_cfg.get("restrictions", [True] * len(AMINO_ACIDS)),
+        "d2o": pick(cli_args.d2o, ini_cfg.get("d2o"), None),
     }
 
 
@@ -268,7 +310,7 @@ class Chromosome:
                      creation generation. Preserved when copied to a new generation.
     """
 
-    def __init__(self, aa_list: List[AminoAcid], modifiable: List[bool],
+    def __init__(self, aa_list: List[AminoAcid], modifiable: List[bool], fixed_d2o: List[int],
                  generation: int = 0, index: int = 0):
         """
         Initializes the chromosome with a random deuteration configuration and d2o.
@@ -284,7 +326,11 @@ class Chromosome:
         self.generation = generation
         self.index = index
         self.randomize_deuteration()
-        self.d2o = random.randint(0, 100)
+        self.fixed_d2o = fixed_d2o
+        if self.fixed_d2o is None:
+            self.d2o = random.randint(0, 100)
+        else:
+            self.d2o = random.choice(self.fixed_d2o)
         self.fitness = 0.0  # Will be set after SANS evaluation
 
     def copy(self) -> 'Chromosome':
@@ -295,8 +341,7 @@ class Chromosome:
         tier-1 (selected/elite) chromosomes keep their provenance across generations,
         which is also used to derive their stable PDB/SANS filenames.
         """
-        new_chrom = Chromosome(self.aa_list, self.modifiable,
-                               self.generation, self.index)
+        new_chrom = Chromosome(self.aa_list, self.modifiable, self.fixed_d2o, self.generation, self.index)
         new_chrom.deuteration = self.deuteration[:]
         new_chrom.d2o = self.d2o
         new_chrom.fitness = self.fitness
@@ -333,6 +378,19 @@ class Chromosome:
         max_down = min(variation_range, self.d2o)
         max_up = min(variation_range, 100 - self.d2o)
         variation = random.randint(-max_down, max_up)
+        self.d2o += variation
+
+    def gaussian_modify_d2o(self, variation_range: int = 5) -> None:
+        """
+        Modifies D2O value with random variation within limits.
+        Args:
+            variation_range: Maximum variation amplitude
+        Rules:
+        - New value: current ± variation with binomial bell distribution centered on 0
+        - Constrained to [0, 100]
+        """
+        raw_variation = sum(random.choice((-1, 1)) for _ in range(variation_range))
+        variation = max(-self.d2o, min(100 - self.d2o, raw_variation))
         self.d2o += variation
 
     def __eq__(self, other: 'Chromosome') -> bool:
@@ -395,7 +453,8 @@ class PopulationGenerator:
                  modifiable: List[bool],
                  population_size: int,
                  elitism: int,
-                 d2o_variation_rate: int):
+                 d2o_variation_rate: int,
+                 d2o: List[int]):
         """
         Initializes the generator.
 
@@ -421,6 +480,7 @@ class PopulationGenerator:
         self.population_size = population_size
         self.elitism = elitism
         self.d2o_variation_rate = d2o_variation_rate
+        self.d2o = d2o
 
     def generate_initial_population(self, generation: int = 0) -> List[Chromosome]:
         """
@@ -441,7 +501,7 @@ class PopulationGenerator:
         max_attempts = self.population_size * 1000
 
         while len(population) < self.population_size and attempts < max_attempts:
-            chrom = Chromosome(self.aa_list, self.modifiable)
+            chrom = Chromosome(self.aa_list, self.modifiable,self.d2o)
             if self._unique_check(chrom, population):
                 chrom.generation = generation
                 chrom.index = len(population) + 1   # 1-based
@@ -514,7 +574,8 @@ class PopulationGenerator:
         tier1 = self._selection_tier1(sorted_pop)
 
         # TIER 2: Mutation (n/3) — new chromosomes
-        tier2 = self._mutation_tier2(tier1, d2o_variation_rate)
+        tier2 = self._mutation_tier2(tier1, d2o_variation_rate, self.d2o)
+
         for i, chrom in enumerate(tier2):
             chrom.generation = new_generation
             chrom.index = tier_size + i + 1          # indices tier_size+1 .. 2*tier_size
@@ -585,7 +646,7 @@ class PopulationGenerator:
 
     def _mutation_tier2(self,
                         selectionnes: List[Chromosome],
-                        d2o_variation_rate: float) -> List[Chromosome]:
+                        d2o_variation_rate: float, d2o: List[int]) -> List[Chromosome]:
         """
         TIER 2: Generates n/3 chromosomes by mutation.
         generation/index are assigned by the caller after this method returns.
@@ -605,8 +666,11 @@ class PopulationGenerator:
                 for idx in indices_a_muter:
                     enfant.deuteration[idx] = not enfant.deuteration[idx]
 
-            if random.choice([True, False]):
-                enfant.modify_d2o(d2o_variation_rate)
+            if self.d2o is None:
+                #variation of d2o using a gaussian variation
+                enfant.gaussian_modify_d2o(d2o_variation_rate)
+            else :
+                enfant.d2o = random.choice(self.d2o)
 
             if self._unique_check(enfant, mutes + selectionnes):
                 mutes.append(enfant)
@@ -625,7 +689,7 @@ class PopulationGenerator:
             parent1, parent2 = random.sample(selectionnes, 2)
             point_coupe = random.randint(1, len(self.aa_list) - 1)
 
-            enfant = Chromosome(self.aa_list, self.modifiable)
+            enfant = Chromosome(self.aa_list, self.modifiable, self.d2o)
             enfant.deuteration = (
                 parent1.deuteration[:point_coupe] +
                 parent2.deuteration[point_coupe:]
@@ -654,7 +718,13 @@ def display_config(cfg: dict):
     print("="*50)
     print(f"Population size      : {cfg['population_size']}")
     print(f"Elitism              : {cfg['elitism']}")
-    print(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
+    if cfg.get("d2o") is None :
+        print(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
+    else :
+        d2o_message = "D2O values           : "
+        for value in cfg.get("d2o") :
+            d2o_message += f"{value} "
+        print(d2o_message)
     print(f"Mutation rate        : {cfg['mutation_rate']}")
     print(f"Crossover rate       : {cfg['crossover_rate']}")
     print(f"Generations          : {cfg['generations']}")
@@ -700,7 +770,8 @@ def run_genetic_algorithm(cfg: dict):
         modifiable=cfg["restrictions"],
         population_size=cfg["population_size"],
         elitism=cfg["elitism"],
-        d2o_variation_rate=cfg["d2o_variation_rate"]
+        d2o_variation_rate=cfg["d2o_variation_rate"],
+        d2o=cfg["d2o"]
     )
 
     print("\n>>> GENERATION 1 - Initial population creation")
