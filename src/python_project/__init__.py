@@ -304,6 +304,7 @@ class Chromosome:
         deuteration (List[bool]): Deuteration vector (True = deuterated)
         d2o (int): Percentage of D2O (0-100)
         fitness (float): Fitness score (set by SANS evaluation)
+        ratio (float): Ratio score (set by SANS evaluation)
         H (int): number of H atoms (set after pdb deuteration)
         D (int): number of D atoms (set after pdb deuteration)
         generation (int): Generation in which this chromosome was first created.
@@ -334,8 +335,10 @@ class Chromosome:
         else:
             self.d2o = random.choice(self.fixed_d2o)
         self.fitness = 0.0  # Will be set after SANS evaluation
+        self.ratio = 0  # Will be set after SANS evaluation
         self.H = 0 # Will be set after pdb deuterations
         self.D = 0 # Will be set after pdb deuterations
+        self.non_labile_D = 0 #Will be set after deuteration
 
     def copy(self) -> 'Chromosome':
         """
@@ -349,8 +352,10 @@ class Chromosome:
         new_chrom.deuteration = self.deuteration[:]
         new_chrom.d2o = self.d2o
         new_chrom.fitness = self.fitness
+        new_chrom.ratio = self.ratio
         new_chrom.H = self.H
         new_chrom.D = self.D
+        new_chrom.non_labile_D = self.non_labile_D
         return new_chrom
 
     def randomize_deuteration(self) -> None:
@@ -587,7 +592,7 @@ class PopulationGenerator:
             chrom.index = tier_size + i + 1          # indices tier_size+1 .. 2*tier_size
 
         # TIER 3: Crossover (n/3) — new chromosomes
-        tier3 = self._crossover_tier3(tier1, tier2)
+        tier3 = self._crossover_tier3(tier1, tier2, d2o_variation_rate, self.d2o )
         for i, chrom in enumerate(tier3):
             chrom.generation = new_generation
             chrom.index = 2 * tier_size + i + 1      # indices 2*tier_size+1 .. 3*tier_size
@@ -672,18 +677,18 @@ class PopulationGenerator:
                 for idx in indices_a_muter:
                     enfant.deuteration[idx] = not enfant.deuteration[idx]
 
-            if self.d2o is None:
+            if d2o is None:
                 #variation of d2o using a gaussian variation
                 enfant.gaussian_modify_d2o(d2o_variation_rate)
             else :
-                enfant.d2o = random.choice(self.d2o)
+                enfant.d2o = random.choice(d2o)
 
             if self._unique_check(enfant, mutes + selectionnes):
                 mutes.append(enfant)
 
         return mutes
 
-    def _crossover_tier3(self, selectionnes: List[Chromosome], mutes: List[Chromosome]) -> List[Chromosome]:
+    def _crossover_tier3(self, selectionnes: List[Chromosome], mutes: List[Chromosome], d2o_variation_rate: float, d2o: List[int]) -> List[Chromosome]:
         """
         TIER 3: Generates n/3 chromosomes by crossover.
         generation/index are assigned by the caller after this method returns.
@@ -700,13 +705,18 @@ class PopulationGenerator:
                 parent1.deuteration[:point_coupe] +
                 parent2.deuteration[point_coupe:]
             )
+            if d2o is None:
+                #variation of d2o using a gaussian variation
+                enfant.gaussian_modify_d2o(d2o_variation_rate*2)
+            else :
+                enfant.d2o = random.choice(d2o)
 
-            if point_coupe == len(self.aa_list) // 2:
-                enfant.d2o = random.choice([parent1.d2o, parent2.d2o])
-            elif point_coupe < len(self.aa_list) // 2:
-                enfant.d2o = parent1.d2o
-            else:
-                enfant.d2o = parent2.d2o
+#            if point_coupe == len(self.aa_list) // 2:
+#                enfant.d2o = random.choice([parent1.d2o, parent2.d2o])
+#            elif point_coupe < len(self.aa_list) // 2:
+#                enfant.d2o = parent1.d2o
+#            else:
+#                enfant.d2o = parent2.d2o
 
             if self._unique_check(enfant, crossovers + mutes + selectionnes):
                 crossovers.append(enfant)

@@ -439,7 +439,7 @@ def ratio_check(I, d2o_percent, threshold=0.01):
             f"Non-positive background ({background:.4f}) for D2O={d2o_percent}%; "
             f"curve rejected"
         )
-        return False
+        return 0.0
 
     I_max = np.max(I)
     ratio = I_max / background
@@ -449,10 +449,10 @@ def ratio_check(I, d2o_percent, threshold=0.01):
         f"ratio={ratio:.4f}, threshold={threshold}"
     )
 
-    return ratio > threshold
+    return ratio
 
 
-def scaling_and_compare(q, I, I_deut, I_prot, q_max):
+def scaling_and_compare(q, I, I_deut, I_prot, q_max, ratio):
     """
     Complete scaling and comparison pipeline.
 
@@ -486,7 +486,7 @@ def scaling_and_compare(q, I, I_deut, I_prot, q_max):
     I_scaled_prot, _, _, _ = scale_curves(q_trunc, I_prot_regrid, I_trunc)
     area_prot = calculate_area_difference(q_trunc, I_scaled_prot, I_prot_regrid)
     # to compare to the 2 curves return area_deut + area_prot
-    return area_prot
+    return area_deut * area_prot * ratio * 10000
 
 
 def fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold=0.01):
@@ -518,19 +518,27 @@ def fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold=0.01):
             f"Could not extract D2O from filename '{os.path.basename(file_path)}'; "
             f"ratio check skipped, curve accepted by default"
         )
+        ratio = 0.0
     else:
-        if not ratio_check(I, d2o_percent, threshold=ratio_threshold):
-            background = compute_incoherent_background(d2o_percent)
-            I_max = np.max(I)
-            ratio = I_max / background if background > 0 else 0.0
+        ratio = ratio_check(I, d2o_percent, threshold=ratio_threshold)
+        if ratio <ratio_threshold:
             logger.debug(
                 f"Ratio check failed for '{os.path.basename(file_path)}': "
-                f"Imax={I_max:.4e}, background={background:.4f}, "
                 f"ratio={ratio:.4f} < threshold={ratio_threshold}"
             )
-            return 0.0
-
-    return scaling_and_compare(q, I, I_deut, I_prot, q_max)
+            #print(
+            #    f"Ratio check FAILED for '{os.path.basename(file_path)}': "
+            #    f"ratio={ratio:.4f} < threshold={ratio_threshold}")
+            return 0.0, ratio
+        else :
+            logger.debug(
+                f"Ratio check passed for '{os.path.basename(file_path)}': "
+                f"ratio={ratio:.4f} > threshold={ratio_threshold}"
+            )
+            #print(
+            #    f"Ratio check passed for '{os.path.basename(file_path)}': "
+            #f"ratio={ratio:.4f} > threshold={ratio_threshold}")
+    return scaling_and_compare(q, I, I_deut, I_prot, q_max, ratio), ratio
 
 
 def normalize_fitness(fitness_values):
@@ -603,14 +611,18 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
     # --- Process each simulation file ---
     raw_scores = []
     valid_files = []
+    ratios = []
 
     for file_path in sim_files:
         try:
             q, I = parse_sans_file(file_path)
-            score = fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold)
+            score, ratio = fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold)
+            #score= fitness(q, I, I_deut, I_prot, q_max, file_path, ratio_threshold)
             raw_scores.append(score)
             valid_files.append(file_path)
-            logger.debug(f"{os.path.basename(file_path)}: raw score = {score:.6e}")
+            ratios.append(ratio)
+            #print(f"THIS IS RATIO IN FITNESS CODE {ratio} and fitness of {score}")
+            logger.debug(f"{os.path.basename(file_path)}: ratio = {ratio:.6e} raw score = {score:.6e}")
         except Exception as e:
             logger.warning(f"Skipping {os.path.basename(file_path)}: {e}")
             raw_scores.append(0.0)
@@ -621,14 +633,15 @@ def evaluate_population_fitness(directory, deut_ref=None, prot_ref=None,
 
     #return normalized, valid_files
     #test returning only raw scores
-    return np.array(raw_scores, dtype=float), valid_files
+    return np.array(raw_scores, dtype=float), valid_files, np.array(ratios, dtype=float)
 
 
 def main():
     args = parse_arguments()
 
     try:
-        fitness_scores, sim_files = evaluate_population_fitness(
+        #fitness_scores, sim_files = evaluate_population_fitness(
+        fitness_scores, sim_files, ratios = evaluate_population_fitness(
             directory=args.directory,
             deut_ref=args.deut_ref,
             prot_ref=args.prot_ref,

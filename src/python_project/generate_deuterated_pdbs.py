@@ -407,10 +407,10 @@ def create_protonated_reference_pdbs(pdb_file: str,
     deut_chrom.d2o = 100
     deut_pdb = PdbDeuteration(pdb_file)
     deut_pdb.apply_deuteration(deut_chrom.deuteration, deut_chrom.d2o)
-    print("For protonated in D2O there are :")
-    print(f"{deut_pdb.stats['hydrogen_atoms']} hydrogen atoms")
-    print(f"{deut_pdb.stats['deuterium_atoms']} deuterum atoms")
-    print(f"The %D is {(deut_pdb.stats['deuterium_atoms']/(deut_pdb.stats['deuterium_atoms']+deut_pdb.stats['hydrogen_atoms']))*100:.2f}")
+    #print("For protonated in D2O there are :")
+    #print(f"{deut_pdb.stats['hydrogen_atoms']} hydrogen atoms")
+    #print(f"{deut_pdb.stats['deuterium_atoms']} deuterum atoms")
+    #print(f"The %D is {(deut_pdb.stats['deuterium_atoms']/(deut_pdb.stats['deuterium_atoms']+deut_pdb.stats['hydrogen_atoms']))*100:.2f}")
     deut_path = ref_dir / f"{Path(pdb_file).stem}_total_deuteration.pdb"
     deut_pdb.save(str(deut_path))
     logger.info(f"  Deuterated reference : {deut_path.name}")
@@ -421,10 +421,10 @@ def create_protonated_reference_pdbs(pdb_file: str,
     prot_chrom.d2o = 0
     prot_pdb = PdbDeuteration(pdb_file)
     prot_pdb.apply_deuteration(prot_chrom.deuteration, prot_chrom.d2o)
-    print("For protonated in H2O there are :")
-    print(f"{prot_pdb.stats['hydrogen_atoms']} hydrogen atoms")
-    print(f"{prot_pdb.stats['deuterium_atoms']} deuterum atoms")
-    print(f"The %D is {(prot_pdb.stats['deuterium_atoms'] / (prot_pdb.stats['deuterium_atoms'] + prot_pdb.stats['hydrogen_atoms'])) * 100:.2f}")
+    #print("For protonated in H2O there are :")
+    #print(f"{prot_pdb.stats['hydrogen_atoms']} hydrogen atoms")
+    #print(f"{prot_pdb.stats['deuterium_atoms']} deuterum atoms")
+    #print(f"The %D is {(prot_pdb.stats['deuterium_atoms'] / (prot_pdb.stats['deuterium_atoms'] + prot_pdb.stats['hydrogen_atoms'])) * 100:.2f}")
     prot_path = ref_dir / f"{Path(pdb_file).stem}_total_protonation.pdb"
     prot_pdb.save(str(prot_path))
     logger.info(f"  Protonated reference : {prot_path.name}")
@@ -456,10 +456,11 @@ def generate_pdbs_for_chromosomes(pdb_file: str,
             deuterator.apply_deuteration(chrom.deuteration, chrom.d2o)
             chrom.H = deuterator.stats['hydrogen_atoms']
             chrom.D = deuterator.stats['deuterium_atoms']
-            print("For protonated in D2O there are :")
-            print(f"{deuterator.stats['hydrogen_atoms']} hydrogen atoms")
-            print(f"{deuterator.stats['deuterium_atoms']} deuterium atoms")
-            print(f"The %D is {(deuterator.stats['deuterium_atoms'] / (deuterator.stats['deuterium_atoms'] + deuterator.stats['hydrogen_atoms'])) * 100:.2f}")
+            chrom.non_labile_D = deuterator.stats['non_labile_D']
+            #print("For protonated in D2O there are :")
+            #print(f"{deuterator.stats['hydrogen_atoms']} hydrogen atoms")
+            #print(f"{deuterator.stats['deuterium_atoms']} deuterium atoms")
+            #print(f"The %D is {(deuterator.stats['deuterium_atoms'] / (deuterator.stats['deuterium_atoms'] + deuterator.stats['hydrogen_atoms'])) * 100:.2f}")
             deuterator.save(str(out_path))
             generated.append(str(out_path))
             logger.debug(f"  Written: {filename}")
@@ -570,7 +571,8 @@ def evaluate_fitness(primus_dir: str,
         chrom_by_stem[stem] = chrom
 
     try:
-        fitness_scores, dat_files = evaluate_population_fitness(
+        #fitness_scores, dat_files = evaluate_population_fitness(
+        fitness_scores, dat_files, ratios = evaluate_population_fitness(
             directory=primus_dir,
             deut_ref=deut_ref,
             prot_ref=prot_ref,
@@ -583,10 +585,12 @@ def evaluate_fitness(primus_dir: str,
 
     matched = 0
     unmatched_files = []
-    for score, file_path in zip(fitness_scores, dat_files):
+    #for score, file_path in zip(fitness_scores, dat_files):
+    for score, file_path, ratio in zip(fitness_scores, dat_files, ratios):
         stem = Path(file_path).stem
         if stem in chrom_by_stem:
             chrom_by_stem[stem].fitness = float(score)
+            chrom_by_stem[stem].ratio = float(ratio)
             matched += 1
         else:
             unmatched_files.append(Path(file_path).name)
@@ -637,7 +641,7 @@ def cleanup_non_tier1_files(output_dir: Path,
         primus_dir:       Directory that contains SANS .dat/.out files (may be None).
         tier1_population: Chromosomes selected for tier-1 of the *new* generation.
     """
-    tier1_stems: Set[str] = {print(Path(get_pdb_filename(c)).stem) for c in tier1_population}
+    #tier1_stems: Set[str] = {print(Path(get_pdb_filename(c)).stem) for c in tier1_population}
     tier1_stems: Set[str] = {Path(get_pdb_filename(c)).stem for c in tier1_population}
 
 
@@ -680,7 +684,7 @@ def display_population_summary(population: List[Chromosome],
                                 sorted_indices: List[int],
                                 generation: int) -> None:
     """Log a short summary of the top-3 chromosomes using their original filenames."""
-    top_n = min(10, len(sorted_indices))
+    top_n = min(3, len(sorted_indices))
     logger.info(f"\n>>> Generation {generation} — top {top_n} chromosome(s):")
     for rank in range(top_n):
         chrom = population[sorted_indices[rank]]
@@ -690,6 +694,8 @@ def display_population_summary(population: List[Chromosome],
             f"  H={chrom.H}"
             f"  D={chrom.D}"
             f"  %D={(chrom.D/(chrom.H + chrom.D))*100 :.2f}"
+            f"  %non labile D={(chrom.non_labile_D / (chrom.H + chrom.D)) * 100 :.2f}"
+            f"  ratio={chrom.ratio:.3f}"
             f"  (created gen{chrom.generation:02d} idx{chrom.index:03d})"
         )
 
@@ -710,9 +716,9 @@ def save_population_summary(population: List[Chromosome],
                       if population[i].fitness is not None]
 
     with open(summary_file, 'w', encoding='utf-8') as fh:
-        fh.write("=" * 90 + "\n")
-        fh.write(f"POPULATION SUMMARY — GENERATION {generation}\n")
-        fh.write("=" * 90 + "\n\n")
+        fh.write("=" * 150 + "\n")
+        fh.write(f"POPULATION SUMMARY - GENERATION {generation}\n")
+        fh.write("=" * 150 + "\n\n")
         fh.write(f"Population size : {len(population)}\n")
         if fitness_values:
             fh.write(f"Best fitness    : {max(fitness_values):.6f}\n")
@@ -721,19 +727,23 @@ def save_population_summary(population: List[Chromosome],
         fh.write("\n")
         fh.write(
             f"{'Rank':<6} {'PDB filename (creation name)':<55} "
-            f"{'D2O%':<6} {'AA':<5} {'Fitness':<14} {'Created':<12}\n"
+            f"{'D2O%':<6} {'AA':<5} {'ratio':<14} {'Fitness':<14} {'D%':<14} {'Non_labile_D%'} {'Created':<12}\n"
         )
-        fh.write("-" * 90 + "\n")
+        fh.write("-" * 150 + "\n")
         for rank, idx in enumerate(sorted_indices, 1):
             chrom = population[idx]
             filename = get_pdb_filename(chrom)
+            ratio_str = f"{chrom.ratio:.3f}"
             fit_str = f"{chrom.fitness:.6f}" if chrom.fitness is not None else "N/A"
+            D_str = f"{(chrom.D/(chrom.H + chrom.D))*100:.2f}"
+            Non_labile_D_str = f"{(chrom.non_labile_D / (chrom.H + chrom.D))*100:.2f}"
+
             fh.write(
                 f"{rank:<6} {filename:<55} {chrom.d2o:<6} "
-                f"{sum(chrom.deuteration):<5} {fit_str:<14} "
+                f"{sum(chrom.deuteration):<5} {ratio_str:<14} {fit_str:<14} {D_str:<14} {Non_labile_D_str:<14}"
                 f"gen{chrom.generation:02d}_idx{chrom.index:03d}\n"
             )
-        fh.write("=" * 90 + "\n")
+        fh.write("=" * 150 + "\n")
 
     logger.info(f"  Summary saved : {summary_file.name}")
 
@@ -745,7 +755,7 @@ def save_best_fitness_summary(best_chrom: Chromosome,
     Append the best chromosome of the current generation to a CSV file.
 
     Columns:
-        generation, fitness, d2o_percent, n_deuterated_aa,
+        generation, fitness, d2o_percent, n_deuterated_aa, ratio, %D,
         deuterated_aa_list, pdb_filename,
         created_generation, created_index
     """
@@ -753,18 +763,19 @@ def save_best_fitness_summary(best_chrom: Chromosome,
                 for i, d in enumerate(best_chrom.deuteration) if d]
     deut_str = ";".join(deut_aas) if deut_aas else "none"
     filename = get_pdb_filename(best_chrom)
-
+    d_str = (best_chrom.D /( best_chrom.H + best_chrom.D ))*100
+    Non_labile_D_str = (best_chrom.non_labile_D / (best_chrom.H + best_chrom.D)) * 100
     write_header = not summary_path.exists()
     with open(summary_path, 'a', encoding='utf-8') as fh:
         if write_header:
             fh.write(
-                "generation,fitness,d2o_percent,n_deuterated_aa,"
+                "generation,fitness,d2o_percent,n_deuterated_aa,ratio,%D,%Non_labile_D%,"
                 "deuterated_aa_list,pdb_filename,"
                 "created_generation,created_index\n"
             )
         fh.write(
             f"{generation},{best_chrom.fitness:.8f},{best_chrom.d2o},"
-            f"{sum(best_chrom.deuteration)},{deut_str},{filename},"
+            f"{sum(best_chrom.deuteration)},{best_chrom.ratio:.3f},{d_str:.2f},{Non_labile_D_str:.2f},{deut_str},{filename},"
             f"{best_chrom.generation},{best_chrom.index}\n"
         )
     logger.info(
@@ -979,7 +990,7 @@ def main():
         # ------------------------------------------------------------------
         # 3. Identify tier-1 files to keep; remove all others
         # ------------------------------------------------------------------
-        logger.info(
+        logger.debug(
             f"  Tier-1 ({len(tier1)} chromosome(s)): "
             + ", ".join(get_pdb_filename(c) for c in tier1[:3])
             + (" …" if len(tier1) > 3 else "")
@@ -1047,9 +1058,12 @@ def main():
     logger.info(f"  File           : {get_pdb_filename(best)}")
     logger.info(f"  D2O            : {best.d2o}%")
     logger.info(f"  Deuterated AAs : {sum(best.deuteration)}/20")
+    logger.info(f"  ratio          : {best.ratio:.3f}")
     logger.info(f"  H              : {best.H}")
     logger.info(f"  D              : {best.D}")
-    logger.info(f"  %D            : {(best.D /( best.H + best.D ))*100:.2f}%")
+    logger.info(f"  Non Labile D   : {best.non_labile_D}")
+    logger.info(f"  %D             : {(best.D /( best.H + best.D ))*100:.2f}%")
+    logger.info(f"  %Non Labile D  : {(best.non_labile_D / (best.H + best.D))*100:.2f}%")
     logger.info(f"  Fitness        : {best.fitness:.6f}")
     logger.info(
         f"  Created at     : generation {best.generation}, "

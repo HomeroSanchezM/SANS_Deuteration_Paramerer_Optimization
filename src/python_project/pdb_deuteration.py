@@ -411,21 +411,41 @@ class PdbDeuteration:
             'hydrogen_atoms': 0,
             'deuterium_atoms': 0,
             'labile_H': 0,
-            'non_labile_H': 0
+            'labile_D': 0,
+            'non_labile_H': 0,
+            'non_labile_D': 0,
         }
         self._count_atoms()
 
     def _count_atoms(self) -> None:
         """Count all atoms, H atoms, and D atoms for statistics."""
+        #Clean dico before counting
+        self.stats['total_atoms'] = 0
+        self.stats['hydrogen_atoms'] = 0
+        self.stats['deuterium_atoms'] = 0
+        self.stats['labile_H'] = 0
+        self.stats['labile_D'] = 0
+        self.stats['non_labile_H'] = 0
+        self.stats['non_labile_D'] = 0
+
         for model in self.structure:
             for chain in model:
                 for residue in chain:
-                    for atom in residue:
+                    labile_vector = self._is_labile_hydrogen(residue)
+                    for atom, is_labile in zip(residue, labile_vector):
                         self.stats['total_atoms'] += 1
                         if atom.element.name == "H":
                             self.stats['hydrogen_atoms'] += 1
-                        elif atom.element.name == "D":
+                        if atom.element.name == "H" and is_labile:
+                            self.stats['labile_H'] += 1
+                        if atom.element.name == "H" and (not is_labile):
+                            self.stats['non_labile_H'] += 1
+                        if atom.element.name == "D":
                             self.stats['deuterium_atoms'] += 1
+                        if atom.element.name == "D" and is_labile:
+                            self.stats['labile_D'] += 1
+                        if atom.element.name == "D" and not is_labile:
+                            self.stats['non_labile_D'] += 1
 
     def apply_deuteration(self,
                           deuteration_vector: List[bool],
@@ -454,14 +474,14 @@ class PdbDeuteration:
                 f"{d2o_percent} received"
             )
 
-        logger.info(f"Applying deuteration: D₂O = {d2o_percent}%")
+        logger.debug(f"Applying deuteration: D₂O = {d2o_percent}%")
         deuterated_aas = [aa.code_3 for aa, deut in zip(AMINO_ACIDS, deuteration_vector) if deut]
         if deuterated_aas == len(AMINO_ACIDS):
-            logger.info(f"Deuteration applied to all amino acids")
+            logger.debug(f"Deuteration applied to all amino acids")
         elif deuterated_aas:
-            logger.info(f"Deuterated amino acids: {', '.join(deuterated_aas)}")
+            logger.debug(f"Deuterated amino acids: {', '.join(deuterated_aas)}")
         else:
-            logger.info("No amino acids selected for deuteration (non-labile H will remain H)")
+            logger.debug("No amino acids selected for deuteration (non-labile H will remain H)")
 
         # Iterate through the structure
         for model in self.structure:
@@ -495,6 +515,8 @@ class PdbDeuteration:
                             if random.random() * 100 < d2o_percent:
                                 if element == "H":
                                     self._convert_atom_H_to_D(atom)
+            #count atoms ones deuteration is applied
+            self._count_atoms()
 
     def _convert_atom_H_to_D(self, atom: gemmi.Atom) -> None:
         """
@@ -529,7 +551,7 @@ class PdbDeuteration:
                 labile_list.append(False)
                 side_chain = True
             else:
-                if atom.element.name == "H":
+                if atom.element.name in ("H","D"):
                     labile_list.append(side_chain)
                 else:
                     side_chain = False
@@ -550,7 +572,7 @@ class PdbDeuteration:
         try:
             output_path = Path(output_path)
             self.structure.write_pdb(str(output_path))
-            logger.info(f"Structure saved: {output_path}")
+            logger.debug(f"Structure saved: {output_path}")
         except Exception as e:
             raise IOError(f"Error while saving: {e}")
 
@@ -606,6 +628,14 @@ def main():
             config['deuteration_vector'],
             config['d2o_percent']
         )
+        print(f"Total Atoms : {deuterator.stats['total_atoms']}")
+        print(f"Hydrogen atoms : {deuterator.stats['hydrogen_atoms']}")
+        print(f"Labile Hydrogen atoms : {deuterator.stats['labile_H']}")
+        print(f"Non Labile Hydrogen atoms : {deuterator.stats['non_labile_H']}")
+        print(f"Deuterium atoms : {deuterator.stats['deuterium_atoms']}")
+        print(f"Labile Deuterium atoms : {deuterator.stats['labile_D']}")
+        print(f"Non Labile Deuterium atoms : {deuterator.stats['non_labile_D']}")
+
         deuterator.save(config['output_pdb'])
     except (FileNotFoundError, RuntimeError, IOError, ValueError) as e:
         logger.error(f"Deuteration failed: {e}")
