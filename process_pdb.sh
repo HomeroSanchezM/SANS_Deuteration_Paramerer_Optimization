@@ -7,6 +7,9 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+# Start total timer
+SECONDS=0
+
 # Get the input folder name
 input_dir="$1"
 
@@ -92,21 +95,34 @@ for pdb_file in "$input_dir"/*.pdb; do
     # Build the output path
     output_file="$output_dir/${basename}.dat"
 
-    # Extract the d2o percentage from the filename (e.g., d2o24 -> 0.24)
-    if [[ "$basename" =~ _d2o([0-9]+)_ ]]; then
+    # Extract D2O value from filename pattern _d2o<digits>
+    if [[ "$basename" =~ _d2o([0-9]+) ]]; then
         d2o_int="${BASH_REMATCH[1]}"
-        # Convert integer percentage to decimal (e.g., 24 -> 0.24)
-        d2o_flag="--d2o 0.$d2o_int"
+
+        # Force base 10 to avoid octal interpretation
+        d2o_int=$((10#$d2o_int))
+
+        # Convert percentage integer → decimal fraction
+        d2o_value=$(LC_NUMERIC=C awk "BEGIN { printf \"%.2f\". $d2o_int / 100 }")
+
+        d2o_flag="--d2o $d2o_value"
     else
-        echo "Warning: could not extract d2o value from filename '$basename', skipping --d2o flag"
+        echo "Warning: could not extract d2o value from '$basename', skipping --d2o flag"
         d2o_flag=""
     fi
     
     # Execute Pepsi-SANS command
     echo "Processing: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
-    ../Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 $d2o_flag -o "$output_file"
+    ../Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 5 $d2o_flag -o "$output_file"
 done
 
 echo ""
 echo "=== Simulation ended! ==="
 echo "Results saved in: $output_dir"
+
+# Display total elapsed time
+elapsed=$SECONDS
+hours=$((elapsed / 3600))
+minutes=$(( (elapsed % 3600) / 60 ))
+seconds=$((elapsed % 60))
+printf "Total execution time: %02dh %02dm %02ds\n" "$hours" "$minutes" "$seconds"
