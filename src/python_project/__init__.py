@@ -669,7 +669,7 @@ class PopulationGenerator:
             parent = random.choice(selectionnes)
             enfant = parent.copy()
 
-            nombre_mutations = random.choice([1, 2, 3])
+            nombre_mutations = random.choice([1, 2, 3, 4, 5])
             indices_modifiables = [i for i in range(len(self.aa_list)) if self.modifiable[i]]
 
             if len(indices_modifiables) >= nombre_mutations:
