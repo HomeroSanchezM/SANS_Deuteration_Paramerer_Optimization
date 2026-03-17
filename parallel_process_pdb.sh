@@ -57,9 +57,16 @@ if [ ! -d "$input_dir" ]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Compute output directory for SANS results (primus_out)
+#   - place it in the same parent as the input folder
+#   - if the folder name ends with '_deuterated_pdbs', strip that suffix
+#     before appending '_primus_out'; otherwise use the full folder name.
+# ---------------------------------------------------------------------------
+parent_dir=$(dirname "$input_dir")
 folder_name=$(basename "$input_dir")
 prefix="${folder_name%_deuterated_pdbs}"
-output_dir="${prefix}_primus_out"
+output_dir="${parent_dir}/${prefix}_primus_out"
 
 # Create or clean output directories
 if [ -d "$output_dir" ] && [ -z "$pdb_list_file" ]; then
