@@ -29,7 +29,7 @@ import logging
 import argparse
 import configparser
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
 
@@ -236,17 +236,6 @@ def load_config_ini(path: str) -> Dict[str, Any]:
     """
     Loads deuteration configuration from an INI file.
 
-    Expected format:
-    [DEUTERATION]
-    input_pdb = path/to/input.pdb
-    output_pdb = path/to/output.pdb
-    d2o_percent = 50
-
-    [AMINO_ACIDS]
-    ALA = true
-    ARG = false
-    ...
-
     Args:
         path: Path to configuration file
 
@@ -362,6 +351,50 @@ def merge_config(cli_args: argparse.Namespace, ini_cfg: Optional[Dict] = None) -
 
 
 # ============================================================================
+#                           LABILITY HELPER
+# ============================================================================
+
+def _compute_lability_for_residue(residue: gemmi.Residue) -> List[bool]:
+    """
+    Determine for each atom in a residue whether it is a labile hydrogen.
+
+    A hydrogen (or deuterium) is labile when it is bonded to O, N, or S.
+    This is approximated by the ordering in the PDB file: an H/D atom is
+    labile if the immediately preceding non-H/D atom is O, N, or S.
+
+    This is the same logic as the original ``_is_labile_hydrogen``; it is
+    factored out as a plain function so it can be called during cache
+    construction without instantiating a PdbDeuteration object.
+
+    Args:
+        residue: A gemmi Residue object.
+
+    Returns:
+        List[bool]: One boolean per atom in the residue.
+                    True  → atom is a labile H or D.
+                    False → atom is not labile (heavy atom, non-labile H/D, …).
+    """
+    labile_list: List[bool] = []
+    preceding_is_heteroatom = False  # True when last heavy atom was O, N or S
+
+    for atom in residue:
+        elem = atom.element.name
+        if elem in ("O", "N", "S"):
+            labile_list.append(False)
+            preceding_is_heteroatom = True
+        elif elem in ("H", "D"):
+            labile_list.append(preceding_is_heteroatom)
+            # Do NOT reset preceding_is_heteroatom: consecutive H on the same
+            # heteroatom (e.g. NH2) are all labile.
+        else:
+            # Carbon or other heavy atom: next H will not be labile.
+            preceding_is_heteroatom = False
+            labile_list.append(False)
+
+    return labile_list
+
+
+# ============================================================================
 #                           PDB DEUTERATION CLASS
 # ============================================================================
 
@@ -374,20 +407,37 @@ class PdbDeuteration:
     - Converting H to D atoms based on amino acid selection
     - Applying D2O exchange to labile hydrogens
     - Saving modified structures
-    
+
+    Optimization notes
+    ------------------
+    The lability map (which atoms are labile H/D) is computed **once** during
+    ``__init__`` and stored in ``self._lability_cache``.  Subsequent calls to
+    ``apply_deuteration`` read from the cache instead of re-computing lability
+    for every residue.
+
+    ``apply_deuteration`` performs a **single pass** over the atom list:
+    it simultaneously applies the H→D conversion and updates the atom counters
+    in ``self.stats``.  The original design required two passes
+    (one for deuteration, one for ``_count_atoms``).
+
     Attributes:
-        pdb_path (Path): Path to the PDB file
+        pdb_path (Path)           : Path to the PDB file
         structure (gemmi.Structure): Parsed PDB structure
-        stats (dict): Statistics about atoms in the structure
+        stats (dict)              : Counters for H/D atoms (updated after each call)
+        _lability_cache (dict)    : Pre-computed per-residue lability vectors
+                                    keyed by (model_idx, chain_idx, residue_idx)
     """
-    
+
     def __init__(self, pdb_file: str):
         """
         Initialize the deuterator with a PDB file.
-        
+
+        The lability map is computed here once (single pass over all atoms),
+        and the initial atom counts are derived from that same pass.
+
         Args:
-            pdb_file: Path to the PDB file
-            
+            pdb_file: Path to the PDB file.
+
         Raises:
             FileNotFoundError: If PDB file doesn't exist
             RuntimeError: If PDB parsing fails
@@ -405,64 +455,98 @@ class PdbDeuteration:
         except Exception as e:
             raise RuntimeError(f"Error while parsing PDB: {e}")
 
-        # Statistics for validation
-        self.stats = {
-            'total_atoms': 0,
+        # Statistics (kept identical to original for full compatibility)
+        self.stats: Dict[str, int] = {
+            'total_atoms':    0,
             'hydrogen_atoms': 0,
-            'deuterium_atoms': 0,
-            'labile_H': 0,
-            'labile_D': 0,
-            'non_labile_H': 0,
-            'non_labile_D': 0,
+            'deuterium_atoms':0,
+            'labile_H':       0,
+            'labile_D':       0,
+            'non_labile_H':   0,
+            'non_labile_D':   0,
         }
-        self._count_atoms()
 
-    def _count_atoms(self) -> None:
-        """Count all atoms, H atoms, and D atoms for statistics."""
-        #Clean dico before counting
-        self.stats['total_atoms'] = 0
-        self.stats['hydrogen_atoms'] = 0
-        self.stats['deuterium_atoms'] = 0
-        self.stats['labile_H'] = 0
-        self.stats['labile_D'] = 0
-        self.stats['non_labile_H'] = 0
-        self.stats['non_labile_D'] = 0
+        # Lability cache: (model_idx, chain_idx, residue_idx) -> List[bool]
+        # Computed once; remains valid across multiple apply_deuteration calls
+        # because lability depends only on surrounding heavy-atom types (O/N/S/C),
+        # which are never modified by deuteration.
+        self._lability_cache: Dict[Tuple[int, int, int], List[bool]] = {}
 
-        for model in self.structure:
-            for chain in model:
-                for residue in chain:
-                    labile_vector = self._is_labile_hydrogen(residue)
+        # Build the lability cache AND compute initial atom counts in one pass.
+        self._build_lability_cache_and_count()
+
+    # ------------------------------------------------------------------
+    #  INTERNAL: one-time setup
+    # ------------------------------------------------------------------
+
+    def _build_lability_cache_and_count(self) -> None:
+        """
+        Build ``self._lability_cache`` and initialise ``self.stats`` in a
+        single traversal of the structure.
+
+        This replaces the original separate calls to
+        ``_count_atoms()`` (which itself called ``_is_labile_hydrogen`` per
+        residue) and avoids iterating over the atom list twice.
+        """
+        # Reset counters
+        for key in self.stats:
+            self.stats[key] = 0
+
+        for mi, model in enumerate(self.structure):
+            for ci, chain in enumerate(model):
+                for ri, residue in enumerate(chain):
+                    # Compute lability once for this residue
+                    labile_vector = _compute_lability_for_residue(residue)
+                    self._lability_cache[(mi, ci, ri)] = labile_vector
+
+                    # Count atoms using the freshly computed lability vector
                     for atom, is_labile in zip(residue, labile_vector):
+                        elem = atom.element.name
                         self.stats['total_atoms'] += 1
-                        if atom.element.name == "H":
+
+                        if elem == "H":
                             self.stats['hydrogen_atoms'] += 1
-                        if atom.element.name == "H" and is_labile:
-                            self.stats['labile_H'] += 1
-                        if atom.element.name == "H" and (not is_labile):
-                            self.stats['non_labile_H'] += 1
-                        if atom.element.name == "D":
+                            if is_labile:
+                                self.stats['labile_H'] += 1
+                            else:
+                                self.stats['non_labile_H'] += 1
+
+                        elif elem == "D":
                             self.stats['deuterium_atoms'] += 1
-                        if atom.element.name == "D" and is_labile:
-                            self.stats['labile_D'] += 1
-                        if atom.element.name == "D" and not is_labile:
-                            self.stats['non_labile_D'] += 1
+                            if is_labile:
+                                self.stats['labile_D'] += 1
+                            else:
+                                self.stats['non_labile_D'] += 1
+
+    # ------------------------------------------------------------------
+    #  PUBLIC: deuteration
+    # ------------------------------------------------------------------
 
     def apply_deuteration(self,
                           deuteration_vector: List[bool],
                           d2o_percent: int = 0) -> None:
         """
         Apply deuteration to the PDB structure.
-        
+
+        Performs a **single pass** over all atoms:
+          1. Converts non-labile H → D for selected amino acid types.
+          2. Probabilistically converts labile H → D based on *d2o_percent*.
+          3. Updates ``self.stats`` in the same pass (no second iteration).
+
+        The lability information is read from the pre-computed
+        ``self._lability_cache`` (populated during ``__init__``).
+
         Args:
-            deuteration_vector: List of 20 booleans (one per amino acid)
-                               True = deuterate all non-labile H in this AA type
-            d2o_percent: Percentage of D2O for labile hydrogen exchange (0-100)
-            
+            deuteration_vector: List of 20 booleans (one per amino acid in
+                                AMINO_ACIDS order).  True = deuterate all
+                                non-labile H in that AA type.
+            d2o_percent:        Percentage of D2O for labile hydrogen exchange
+                                (integer 0-100).
+
         Raises:
-            ValueError: If deuteration_vector doesn't have exactly 20 elements
-            ValueError: If d2o_percent is not in range [0, 100]
+            ValueError: If *deuteration_vector* doesn't have exactly 20 elements.
+            ValueError: If *d2o_percent* is not in [0, 100].
         """
-        # Input validation
         if len(deuteration_vector) != 20:
             raise ValueError(
                 f"deuteration_vector must contain 20 elements, "
@@ -475,89 +559,145 @@ class PdbDeuteration:
             )
 
         logger.debug(f"Applying deuteration: D₂O = {d2o_percent}%")
-        deuterated_aas = [aa.code_3 for aa, deut in zip(AMINO_ACIDS, deuteration_vector) if deut]
-        if deuterated_aas == len(AMINO_ACIDS):
-            logger.debug(f"Deuteration applied to all amino acids")
-        elif deuterated_aas:
+        deuterated_aas = [
+            aa.code_3 for aa, deut in zip(AMINO_ACIDS, deuteration_vector) if deut
+        ]
+        if deuterated_aas:
             logger.debug(f"Deuterated amino acids: {', '.join(deuterated_aas)}")
         else:
-            logger.debug("No amino acids selected for deuteration (non-labile H will remain H)")
+            logger.debug(
+                "No amino acids selected for deuteration "
+                "(non-labile H will remain H)"
+            )
 
-        # Iterate through the structure
-        for model in self.structure:
-            for chain in model:
-                for residue in chain:
+        # Reset counters — they are recomputed during this single pass
+        for key in self.stats:
+            self.stats[key] = 0
+
+        for mi, model in enumerate(self.structure):
+            for ci, chain in enumerate(model):
+                for ri, residue in enumerate(chain):
                     residue_name = residue.name.strip().upper()
 
-                    # Check if it's a standard amino acid
-                    if residue_name not in AA_INDEX:
-                        logger.debug(f"Non-standard residue ignored: {residue_name}")
-                        continue
+                    # ---- Determine deuteration intent for this residue ----
+                    aa_index       = AA_INDEX.get(residue_name)     # None for non-AA
+                    should_deut_aa = (
+                        aa_index is not None and deuteration_vector[aa_index]
+                    )
 
-                    # Determine lability for each atom in the residue
-                    labile_vector = self._is_labile_hydrogen(residue)
-                    
-                    # Get amino acid index
-                    aa_index = AA_INDEX[residue_name]
-                    should_deuterate = deuteration_vector[aa_index]
+                    # Read pre-computed lability vector (always available)
+                    labile_vector = self._lability_cache[(mi, ci, ri)]
 
-                    # Process each atom in the residue
+                    # ---- Single pass: modify + count ----
                     for atom, is_labile in zip(residue, labile_vector):
-                        element = atom.element.name
+                        elem = atom.element.name
 
-                        # Deuterate non-labile H if this AA type is selected
-                        if should_deuterate:
-                            if element == "H" and not is_labile:
-                                self._convert_atom_H_to_D(atom)
-
-                        # Apply D2O exchange to labile H
-                        if is_labile:
-                            if random.random() * 100 < d2o_percent:
-                                if element == "H":
+                        # --- Possible H→D conversions ---
+                        if elem == "H":
+                            if is_labile:
+                                # D2O exchange: probabilistic
+                                if random.random() * 100 < d2o_percent:
                                     self._convert_atom_H_to_D(atom)
-            #count atoms ones deuteration is applied
-            self._count_atoms()
+                                    elem = "D"  # update local variable for counting
+                            elif should_deut_aa and aa_index is not None:
+                                # Non-labile H in a selected AA type
+                                self._convert_atom_H_to_D(atom)
+                                elem = "D"  # update local variable for counting
 
-    def _convert_atom_H_to_D(self, atom: gemmi.Atom) -> None:
+                        # --- Count (using potentially updated element) ---
+                        self.stats['total_atoms'] += 1
+
+                        if elem == "H":
+                            self.stats['hydrogen_atoms'] += 1
+                            if is_labile:
+                                self.stats['labile_H'] += 1
+                            else:
+                                self.stats['non_labile_H'] += 1
+
+                        elif elem == "D":
+                            self.stats['deuterium_atoms'] += 1
+                            if is_labile:
+                                self.stats['labile_D'] += 1
+                            else:
+                                self.stats['non_labile_D'] += 1
+
+    # ------------------------------------------------------------------
+    #  INTERNAL: atom conversion
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _convert_atom_H_to_D(atom: gemmi.Atom) -> None:
         """
         Convert a hydrogen atom to deuterium (in-place).
-        
+
         Args:
-            atom: The atom to modify
+            atom: The atom to modify (must have element H).
         """
-        if atom.element.name == "H":
-            atom.name = atom.name.replace('H', 'D', 1)
-            atom.element = gemmi.Element("D")
+        atom.name    = atom.name.replace('H', 'D', 1)
+        atom.element = gemmi.Element("D")
+
+    # ------------------------------------------------------------------
+    #  KEPT FOR COMPATIBILITY — wraps the cache-based approach
+    # ------------------------------------------------------------------
 
     def _is_labile_hydrogen(self, residue: gemmi.Residue) -> List[bool]:
         """
         Determine for each atom in a residue if it's a labile hydrogen.
-        
-        A hydrogen is labile if it's bonded to O, N, or S.
-        This is approximated by checking if H follows an O/N/S atom.
-        
+
+        .. note::
+            This method is retained for API compatibility.  Internally,
+            ``PdbDeuteration`` now uses the pre-computed ``_lability_cache``
+            instead of calling this method repeatedly.  External code that
+            calls this method will still get correct results but will not
+            benefit from the caching.
+
         Args:
-            residue: Residue to analyze
-            
+            residue: Residue to analyze.
+
         Returns:
-            List of booleans (one per atom in residue)
-            True if the atom is a labile hydrogen
+            List[bool]: One boolean per atom in the residue.
         """
-        labile_list = []
-        side_chain = False
-        
-        for atom in residue:
-            if atom.element.name in ("O", "N", "S"):
-                labile_list.append(False)
-                side_chain = True
-            else:
-                if atom.element.name in ("H","D"):
-                    labile_list.append(side_chain)
-                else:
-                    side_chain = False
-                    labile_list.append(False)
-        
-        return labile_list
+        return _compute_lability_for_residue(residue)
+
+    def _count_atoms(self) -> None:
+        """
+        Recount all atoms and update ``self.stats``.
+
+        .. note::
+            This method is retained for API compatibility.  In the optimized
+            version, counting is done inside ``apply_deuteration`` so an
+            explicit call to ``_count_atoms`` is never needed.  Calling it
+            externally after ``apply_deuteration`` is safe but redundant.
+        """
+        for key in self.stats:
+            self.stats[key] = 0
+
+        for mi, model in enumerate(self.structure):
+            for ci, chain in enumerate(model):
+                for ri, residue in enumerate(chain):
+                    labile_vector = self._lability_cache.get(
+                        (mi, ci, ri),
+                        _compute_lability_for_residue(residue)  # fallback
+                    )
+                    for atom, is_labile in zip(residue, labile_vector):
+                        elem = atom.element.name
+                        self.stats['total_atoms'] += 1
+                        if elem == "H":
+                            self.stats['hydrogen_atoms'] += 1
+                            if is_labile:
+                                self.stats['labile_H'] += 1
+                            else:
+                                self.stats['non_labile_H'] += 1
+                        elif elem == "D":
+                            self.stats['deuterium_atoms'] += 1
+                            if is_labile:
+                                self.stats['labile_D'] += 1
+                            else:
+                                self.stats['non_labile_D'] += 1
+
+    # ------------------------------------------------------------------
+    #  PUBLIC: save
+    # ------------------------------------------------------------------
 
     def save(self, output_path: str) -> None:
         """
@@ -570,8 +710,7 @@ class PdbDeuteration:
             IOError: If writing fails
         """
         try:
-            output_path = Path(output_path)
-            self.structure.write_pdb(str(output_path))
+            self.structure.write_pdb(str(Path(output_path)))
             logger.debug(f"Structure saved: {output_path}")
         except Exception as e:
             raise IOError(f"Error while saving: {e}")
@@ -628,13 +767,13 @@ def main():
             config['deuteration_vector'],
             config['d2o_percent']
         )
-        print(f"Total Atoms : {deuterator.stats['total_atoms']}")
-        print(f"Hydrogen atoms : {deuterator.stats['hydrogen_atoms']}")
-        print(f"Labile Hydrogen atoms : {deuterator.stats['labile_H']}")
-        print(f"Non Labile Hydrogen atoms : {deuterator.stats['non_labile_H']}")
-        print(f"Deuterium atoms : {deuterator.stats['deuterium_atoms']}")
-        print(f"Labile Deuterium atoms : {deuterator.stats['labile_D']}")
-        print(f"Non Labile Deuterium atoms : {deuterator.stats['non_labile_D']}")
+        print(f"Total Atoms              : {deuterator.stats['total_atoms']}")
+        print(f"Hydrogen atoms           : {deuterator.stats['hydrogen_atoms']}")
+        print(f"Labile Hydrogen atoms    : {deuterator.stats['labile_H']}")
+        print(f"Non Labile Hydrogen atoms: {deuterator.stats['non_labile_H']}")
+        print(f"Deuterium atoms          : {deuterator.stats['deuterium_atoms']}")
+        print(f"Labile Deuterium atoms   : {deuterator.stats['labile_D']}")
+        print(f"Non Labile Deuterium atoms: {deuterator.stats['non_labile_D']}")
 
         deuterator.save(config['output_pdb'])
     except (FileNotFoundError, RuntimeError, IOError, ValueError) as e:
