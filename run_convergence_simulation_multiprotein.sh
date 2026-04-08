@@ -14,7 +14,16 @@ D2O_VAR=5
 RATIO_THRESH=0.01
 
 # Seeds to run (42 + 1..9)
-SEEDS=(42 1 2 3 4 5 6 7 8 9)
+SEEDS=(42)
+
+# ---- Reference options ----
+# Set NO_DEFAULT_REF=true to skip the automatic protonated-in-D2O / H2O references.
+NO_DEFAULT_REF=false
+
+# Add extra reference PDB paths here (space-separated), or leave empty.
+# These are passed via --ref to generate_deuterated_pdbs.py.
+# Example: REF_PDBS=("original/my_custom_ref1.pdb" "original/my_custom_ref2.pdb")
+REF_PDBS=("original/best_gfp/gen78_Chr071_d2o100_deut14.pdb" "original/best_gfp/gen87_Chr050_d2o100_deut09.pdb")
 
 # ------------------------------------------------
 
@@ -32,27 +41,38 @@ if [ $# -eq 0 ]; then
     usage
 fi
 
-# Loop over all provided protein names
+# Build --no_default_ref and --ref arguments to pass to Python
+ref_args=()
+if [ "$NO_DEFAULT_REF" = true ]; then
+    ref_args+=("--no_default_ref")
+fi
+if [ ${#REF_PDBS[@]} -gt 0 ]; then
+    ref_args+=("--ref" "${REF_PDBS[@]}")
+fi
+
 for PROTEIN in "$@"; do
     echo ""
     echo "========================================="
-    echo "Processing protein: $PROTEIN"
+    echo "Processing protein: $PROTEIN_NAME (from $PROTEIN)"
     echo "========================================="
 
-    INPUT_PDB="original/${PROTEIN}.pdb"
+    INPUT_PDB="${PROTEIN}"
     if [ ! -f "$INPUT_PDB" ]; then
         echo "WARNING: PDB file $INPUT_PDB not found. Skipping $PROTEIN."
         continue
     fi
 
-    BASE_DIR="test_result_${PROTEIN}/convergence_simulation"
+    # Extract just the protein name (no directory, no extension)
+    PROTEIN_NAME=$(basename "${PROTEIN%.*}")
+
+    BASE_DIR="test_result_${PROTEIN_NAME}/convergence_simulation"
 
     for SEED in "${SEEDS[@]}"; do
         echo ""
         echo "--- Running seed $SEED for $PROTEIN ---"
 
         # Define output directory for this seed
-        OUT_DIR="${BASE_DIR}/seed_${SEED}/${PROTEIN}/"
+        OUT_DIR="${BASE_DIR}/seed_${SEED}/${PROTEIN_NAME}/"
         mkdir -p "$OUT_DIR"
 
         # Run the genetic algorithm
@@ -65,7 +85,8 @@ for PROTEIN in "$@"; do
             --d2o-var "$D2O_VAR" \
             --seed "$SEED" \
             --ratio-threshold "$RATIO_THRESH" \
-            --output_dir "$OUT_DIR"
+            --output_dir "$OUT_DIR" \
+            "${ref_args[@]}" 
 
         # Generate and save the fitness evolution plot
         CSV_FILE="${OUT_DIR}/best_fitness_summary.csv"

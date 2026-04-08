@@ -10,19 +10,17 @@
 #   <pdb_list_file> is a plain text file with one absolute PDB path per line.
 #   When it is supplied the ref/ subfolder is NOT re-processed (outputs already exist).
 #
-# Examples:
-#   ./parallel_process_pdb.sh my_analysis_deuterated_pdbs
-#   ./parallel_process_pdb.sh my_analysis_deuterated_pdbs /tmp/new_pdbs.txt
-#   ./parallel_process_pdb.sh my_analysis_deuterated_pdbs /tmp/new_pdbs.txt 60
+# Reference PDB naming conventions for D2O flag selection:
+#   *_total_deuteration  -> --d2o 1   (protonated in D2O)
+#   *_total_protonation  -> --d2o 0   (protonated in H2O)
+#   *_d2oXX              -> --d2o XX/100  (any other ref with explicit D2O value)
+#   otherwise            -> no --d2o flag
 
 # ---------------------------------------------------------------------------
 # Check mandatory argument
 # ---------------------------------------------------------------------------
 if [ $# -eq 0 ]; then
     echo "Usage: $0 <deuterated_pdbs_folder> [pdb_list_file] [num_jobs]"
-    echo ""
-    echo "  Full mode:        $0 my_analysis_deuterated_pdbs [num_jobs]"
-    echo "  Incremental mode: $0 my_analysis_deuterated_pdbs /tmp/list.txt [num_jobs]"
     exit 1
 fi
 
@@ -35,12 +33,9 @@ num_jobs=150   # default parallel jobs
 # ---------------------------------------------------------------------------
 # Parse optional arguments
 # ---------------------------------------------------------------------------
-# If the second argument is a regular file, it is the PDB list file.
-# If the second argument is a number (or absent), it is the job count.
 if [ $# -ge 2 ]; then
     if [ -f "$2" ]; then
         pdb_list_file="$2"
-        # Third argument, if any, is num_jobs
         if [ $# -ge 3 ] && [[ "$3" =~ ^[0-9]+$ ]]; then
             num_jobs="$3"
         fi
@@ -93,8 +88,26 @@ fi
 echo ""
 
 # ---------------------------------------------------------------------------
-# Helper: process one REF file
+# Determine the --d2o flag for a reference PDB file.
+# Priority: _total_deuteration > _total_protonation > _d2oXX > (none)
 # ---------------------------------------------------------------------------
+_get_ref_d2o_flag() {
+    local basename="$1"
+    if [[ "$basename" == *"_total_deuteration" ]]; then
+        echo "--d2o 1"
+    elif [[ "$basename" == *"_total_protonation" ]]; then
+        echo "--d2o 0"
+    elif [[ "$basename" =~ _d2o([0-9]+) ]]; then
+        local d2o_int=$((10#${BASH_REMATCH[1]}))
+        local d2o_value
+        d2o_value=$(LC_NUMERIC=C awk "BEGIN { printf \"%.2f\", $d2o_int / 100 }")
+        echo "--d2o $d2o_value"
+    else
+        echo ""
+    fi
+}
+export -f _get_ref_d2o_flag
+
 process_ref_file() {
     pdb_file="$1"
     output_dir="$2"
@@ -102,21 +115,16 @@ process_ref_file() {
     basename=$(basename "$pdb_file" .pdb)
     output_file="$output_dir/ref/${basename}.dat"
 
-    if [[ "$basename" == *"_total_deuteration" ]]; then
-        d2o_flag="--d2o 1"
-    elif [[ "$basename" == *"_total_protonation" ]]; then
-        d2o_flag="--d2o 0"
-    else
-        d2o_flag=""
-    fi
+    d2o_flag=$(_get_ref_d2o_flag "$basename")
 
-    echo "Processing ref: $pdb_file -> $output_file"
+    echo "Processing ref: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
+    # shellcheck disable=SC2086
     ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 5 $d2o_flag -o "$output_file"
 }
 export -f process_ref_file
 
 # ---------------------------------------------------------------------------
-# Helper: process one MAIN file
+# process one MAIN file
 # ---------------------------------------------------------------------------
 process_main_file() {
     pdb_file="$1"
@@ -127,12 +135,7 @@ process_main_file() {
 
     # Extract D2O value from filename pattern _d2o<digits>
     if [[ "$basename" =~ _d2o([0-9]+) ]]; then
-        d2o_int="${BASH_REMATCH[1]}"
-
-        # Force base 10 to avoid octal interpretation
-        d2o_int=$((10#$d2o_int))
-
-        # Convert percentage integer → decimal fraction
+        d2o_int=$((10#${BASH_REMATCH[1]}))
         d2o_value=$(LC_NUMERIC=C awk "BEGIN { printf \"%.2f\", $d2o_int / 100 }")
 
         d2o_flag="--d2o $d2o_value"
@@ -147,13 +150,13 @@ process_main_file() {
 export -f process_main_file
 
 # ---------------------------------------------------------------------------
-# Process ref/ subfolder — only in full mode (incremental reuses existing ref)
+# Process ref/ subfolder — only in full mode
 # ---------------------------------------------------------------------------
 if [ -z "$pdb_list_file" ]; then
     if [ -d "$input_dir/ref" ]; then
         ref_files=("$input_dir/ref"/*.pdb)
         if [ -e "${ref_files[0]}" ]; then
-            echo "=== Processing reference files (parallel -j $num_jobs) ==="
+            echo "=== Processing ${#ref_files[@]} reference file(s) (parallel -j $num_jobs) ==="
             printf '%s\n' "${ref_files[@]}" | parallel -j "$num_jobs" -k \
                 process_ref_file {} "$output_dir"
             echo ""
