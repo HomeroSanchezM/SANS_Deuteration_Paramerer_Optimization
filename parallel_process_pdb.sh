@@ -119,7 +119,7 @@ process_ref_file() {
 
     echo "Processing ref: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
     # shellcheck disable=SC2086
-    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 5 $d2o_flag -o "$output_file"
+    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 2.5 $d2o_flag -o "$output_file"
 }
 export -f process_ref_file
 
@@ -145,7 +145,7 @@ process_main_file() {
     fi
 
     echo "Processing: $pdb_file -> $output_file (d2o flag: '${d2o_flag:-none}')"
-    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 5 $d2o_flag -o "$output_file"
+    ./Pepsi-SANS-Linux/Pepsi-SANS "$pdb_file" --hModel 3 --conc 2.5 $d2o_flag -o "$output_file"
 }
 export -f process_main_file
 

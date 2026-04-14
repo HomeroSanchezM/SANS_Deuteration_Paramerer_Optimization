@@ -63,33 +63,100 @@ class AminoAcid:
     code_1: str
 
 
-# List of standard amino acids
+# Canonical list of 20 standard amino acids
 AMINO_ACIDS = [
-    AminoAcid("Alanine", "ALA", "A"),
-    AminoAcid("Arginine", "ARG", "R"),
-    AminoAcid("Asparagine", "ASN", "N"),
-    AminoAcid("Aspartic acid", "ASP", "D"),
-    AminoAcid("Cysteine", "CYS", "C"),
-    AminoAcid("Glutamic acid", "GLU", "E"),
-    AminoAcid("Glutamine", "GLN", "Q"),
-    AminoAcid("Glycine", "GLY", "G"),
-    AminoAcid("Histidine", "HIS", "H"),
-    AminoAcid("Isoleucine", "ILE", "I"),
-    AminoAcid("Leucine", "LEU", "L"),
-    AminoAcid("Lysine", "LYS", "K"),
-    AminoAcid("Methionine", "MET", "M"),
-    AminoAcid("Phenylalanine", "PHE", "F"),
-    AminoAcid("Proline", "PRO", "P"),
-    AminoAcid("Serine", "SER", "S"),
-    AminoAcid("Threonine", "THR", "T"),
-    AminoAcid("Tryptophan", "TRP", "W"),
-    AminoAcid("Tyrosine", "TYR", "Y"),
-    AminoAcid("Valine", "VAL", "V")
+    AminoAcid("Alanine",       "ALA", "A"),   # index 0
+    AminoAcid("Arginine",      "ARG", "R"),   # index 1
+    AminoAcid("Asparagine",    "ASN", "N"),   # index 2
+    AminoAcid("Aspartic acid", "ASP", "D"),   # index 3
+    AminoAcid("Cysteine",      "CYS", "C"),   # index 4
+    AminoAcid("Glutamic acid", "GLU", "E"),   # index 5
+    AminoAcid("Glutamine",     "GLN", "Q"),   # index 6
+    AminoAcid("Glycine",       "GLY", "G"),   # index 7
+    AminoAcid("Histidine",     "HIS", "H"),   # index 8
+    AminoAcid("Isoleucine",    "ILE", "I"),   # index 9
+    AminoAcid("Leucine",       "LEU", "L"),   # index 10
+    AminoAcid("Lysine",        "LYS", "K"),   # index 11
+    AminoAcid("Methionine",    "MET", "M"),   # index 12
+    AminoAcid("Phenylalanine", "PHE", "F"),   # index 13
+    AminoAcid("Proline",       "PRO", "P"),   # index 14
+    AminoAcid("Serine",        "SER", "S"),   # index 15
+    AminoAcid("Threonine",     "THR", "T"),   # index 16
+    AminoAcid("Tryptophan",    "TRP", "W"),   # index 17
+    AminoAcid("Tyrosine",      "TYR", "Y"),   # index 18
+    AminoAcid("Valine",        "VAL", "V"),   # index 19
 ]
 
 # Dictionary for quick access by 3-letter code
 AA_DICT = {aa.code_3: aa for aa in AMINO_ACIDS}
 AA_INDEX = {aa.code_3: i for i, aa in enumerate(AMINO_ACIDS)}
+
+
+# duplicated table of __init__.py for standalone module use 
+
+# Linked pairs: when one member is deuterated, the other is too.
+#   ASN + ASP
+#   GLU + GLN
+#
+# Each entry is a list of 3-letter codes belonging to the same linked group.
+
+LINKED_AA_GROUPS: List[List[str]] = [
+    ["ALA"],
+    ["ARG"],
+    ["ASN", "ASP"],   # Linked
+    ["CYS"],
+    ["GLU", "GLN"],   # Linked
+    ["GLY"],
+    ["HIS"],
+    ["ILE"],
+    ["LEU"],
+    ["LYS"],
+    ["MET"],
+    ["PHE"],
+    ["PRO"],
+    ["SER"],
+    ["THR"],
+    ["TRP"],
+    ["TYR"],
+    ["VAL"],
+]
+
+# Number of effective genes
+_N_EFFECTIVE = len(LINKED_AA_GROUPS)
+
+
+def expand_deuteration_vector(deut_vec: List[bool]) -> List[bool]:
+    """
+    Expand an 18 deuteration vector to a full 20
+    vector aligned with AMINO_ACIDS.
+
+    For linked groups both member receive the same boolean
+
+    Args:
+        deut_vec: Either an 18-element vector (one gene per linked group) or a
+                  20-element vector (one entry per canonical AA).
+
+    Returns:
+        20 boolean list. If a 20 vector is passed it is
+        returned unchanged.
+
+    Raises:
+        ValueError: If the input length is neither 18 nor 20.
+    """
+    if len(deut_vec) == 20:
+        return list(deut_vec)   # already full-length
+
+    if len(deut_vec) != _N_EFFECTIVE:
+        raise ValueError(
+            f"expand_deuteration_vector: expected {_N_EFFECTIVE} or 20 elements, "
+            f"got {len(deut_vec)}"
+        )
+
+    deut_20 = [False] * len(AMINO_ACIDS)
+    for gene_idx, group in enumerate(LINKED_AA_GROUPS):
+        for aa_code in group:
+            deut_20[AA_INDEX[aa_code]] = deut_vec[gene_idx]
+    return deut_20
 
 
 # ============================================================================
@@ -120,9 +187,9 @@ Usage examples:
   
   # Deuterate all amino acids
   python pdb_deuteration.py -i input.pdb -o output.pdb --all --d2o 100
-  
-  # Show help
-  python pdb_deuteration.py -h
+
+  # Note: --ASN and --ASP are independent flags; if you want linked behaviour
+  # use the genetic algorithm (generate_deuterated_pdbs.py) instead.
         """
     )
 
@@ -220,15 +287,12 @@ def validate_config(cfg: Dict[str, Any]) -> None:
 
     # D2O percentage validation
     if not 0 <= cfg["d2o_percent"] <= 100:
+        raise ValueError(f"d2o_percent must be in [0, 100], got {cfg['d2o_percent']}")
+    # Accept 18 or 20 element vectors
+    n = len(cfg["deuteration_vector"])
+    if n not in (len(AMINO_ACIDS), _N_EFFECTIVE):
         raise ValueError(
-            f"d2o_percent must be in [0, 100], got {cfg['d2o_percent']}"
-        )
-
-    # Restrictions validation
-    if len(cfg["deuteration_vector"]) != len(AMINO_ACIDS):
-        raise ValueError(
-            f"deuteration_vector length ({len(cfg['deuteration_vector'])}) "
-            f"!= number of amino acids ({len(AMINO_ACIDS)})"
+            f"deuteration_vector length ({n}) must be {_N_EFFECTIVE} or {len(AMINO_ACIDS)}"
         )
 
 
@@ -252,30 +316,18 @@ def load_config_ini(path: str) -> Dict[str, Any]:
     config = configparser.ConfigParser()
     config.read(path)
 
-    cfg = {}
+    cfg = {
+        "input_pdb":  config.get("DEUTERATION", "input_pdb",    fallback=None),
+        "output_pdb": config.get("DEUTERATION", "output_pdb",   fallback=None),
+        "d2o_percent":config.getfloat("DEUTERATION", "d2o_percent", fallback=0.0),
+    }
 
-    # Read deuteration parameters (with fallbacks)
-    try:
-        cfg["input_pdb"] = config.get("DEUTERATION", "input_pdb", fallback=None)
-        cfg["output_pdb"] = config.get("DEUTERATION", "output_pdb", fallback=None)
-        cfg["d2o_percent"] = config.getfloat("DEUTERATION", "d2o_percent", fallback=0.0)
-    except (configparser.NoSectionError, ValueError) as e:
-        raise ValueError(f"Error reading [DEUTERATION] section: {e}")
-
-    # Read amino acid selection (default to False if not specified)
-    try:
-        deuteration_vector = []
-        for aa in AMINO_ACIDS:
-            # If section exists, try to get value, default to False
-            if config.has_section("AMINO_ACIDS"):
-                value = config.getboolean("AMINO_ACIDS", aa.code_3, fallback=False)
-            else:
-                value = False
-            deuteration_vector.append(value)
-        cfg["deuteration_vector"] = deuteration_vector
-    except ValueError as e:
-        raise ValueError(f"Error reading [AMINO_ACIDS] section: {e}")
-
+    deuteration_vector = []
+    for aa in AMINO_ACIDS:
+        value = (config.getboolean("AMINO_ACIDS", aa.code_3, fallback=False)
+                 if config.has_section("AMINO_ACIDS") else False)
+        deuteration_vector.append(value)
+    cfg["deuteration_vector"] = deuteration_vector   # 20 elements
     return cfg
 
 
@@ -326,12 +378,7 @@ def merge_config(cli_args: argparse.Namespace, ini_cfg: Optional[Dict] = None) -
         deuteration_vector = []
         for i, aa in enumerate(AMINO_ACIDS):
             cli_value = getattr(cli_args, aa.code_3)
-            if cli_value is not None:
-                # CLI overrides individual AA
-                deuteration_vector.append(cli_value)
-            else:
-                # Use INI value
-                deuteration_vector.append(ini_vector[i])
+            deuteration_vector.append(cli_value if cli_value is not None else ini_vector[i])
 
     return {
         # I/O
@@ -408,17 +455,6 @@ class PdbDeuteration:
     - Applying D2O exchange to labile hydrogens
     - Saving modified structures
 
-    Optimization notes
-    ------------------
-    The lability map (which atoms are labile H/D) is computed **once** during
-    ``__init__`` and stored in ``self._lability_cache``.  Subsequent calls to
-    ``apply_deuteration`` read from the cache instead of re-computing lability
-    for every residue.
-
-    ``apply_deuteration`` performs a **single pass** over the atom list:
-    it simultaneously applies the H→D conversion and updates the atom counters
-    in ``self.stats``.  The original design required two passes
-    (one for deuteration, one for ``_count_atoms``).
 
     Attributes:
         pdb_path (Path)           : Path to the PDB file
@@ -466,10 +502,7 @@ class PdbDeuteration:
             'non_labile_D':   0,
         }
 
-        # Lability cache: (model_idx, chain_idx, residue_idx) -> List[bool]
-        # Computed once; remains valid across multiple apply_deuteration calls
-        # because lability depends only on surrounding heavy-atom types (O/N/S/C),
-        # which are never modified by deuteration.
+        # Per-residue lability vectors: (model_idx, chain_idx, residue_idx) -> List[bool]
         self._lability_cache: Dict[Tuple[int, int, int], List[bool]] = {}
 
         # Build the lability cache AND compute initial atom counts in one pass.
@@ -480,15 +513,7 @@ class PdbDeuteration:
     # ------------------------------------------------------------------
 
     def _build_lability_cache_and_count(self) -> None:
-        """
-        Build ``self._lability_cache`` and initialise ``self.stats`` in a
-        single traversal of the structure.
-
-        This replaces the original separate calls to
-        ``_count_atoms()`` (which itself called ``_is_labile_hydrogen`` per
-        residue) and avoids iterating over the atom list twice.
-        """
-        # Reset counters
+        """Build lability cache and initialise stats in a single structure traversal."""
         for key in self.stats:
             self.stats[key] = 0
 
@@ -528,59 +553,64 @@ class PdbDeuteration:
         """
         Apply deuteration to the PDB structure.
 
-        Performs a **single pass** over all atoms:
-          1. Converts non-labile H → D for selected amino acid types.
-          2. Probabilistically converts labile H → D based on *d2o_percent*.
-          3. Updates ``self.stats`` in the same pass (no second iteration).
+        Accepts both 18-element (linked-pair chromosome) and 20-element
+        (canonical) deuteration vectors.  An 18-element vector is
+        automatically expanded before processing, so that ASN and ASP (or
+        GLU and GLN) are always deuterated together when their shared gene
+        is True.
 
-        The lability information is read from the pre-computed
-        ``self._lability_cache`` (populated during ``__init__``).
+        Algorithm (single pass per atom):
+          1. If the atom is a non-labile H in a selected AA type  convert to D.
+          2. If the atom is a labile H  convert to D with probability d2o_percent/100.
+          3. Update self.stats counters in the same pass.
 
         Args:
-            deuteration_vector: List of 20 booleans (one per amino acid in
-                                AMINO_ACIDS order).  True = deuterate all
-                                non-labile H in that AA type.
-            d2o_percent:        Percentage of D2O for labile hydrogen exchange
-                                (integer 0-100).
+            deuteration_vector: 18-element OR 20-element boolean list.
+                                 18-element: one gene per linked group
+                                             (ASN+ASP share gene 2, GLU+GLN share gene 4).
+                                 20-element: one entry per canonical AA (legacy format).
+            d2o_percent:        D2O percentage for labile H exchange (integer 0-100).
 
         Raises:
-            ValueError: If *deuteration_vector* doesn't have exactly 20 elements.
-            ValueError: If *d2o_percent* is not in [0, 100].
+            ValueError: If deuteration_vector has neither 18 nor 20 elements.
+            ValueError: If d2o_percent is outside [0, 100].
         """
-        if len(deuteration_vector) != 20:
-            raise ValueError(
-                f"deuteration_vector must contain 20 elements, "
-                f"{len(deuteration_vector)} received"
+        # ---- Expand 18 -> 20 if a linked-pair chromosome vector is supplied ----
+        # This ensures that both AAs in each linked pair (ASN+ASP, GLU+GLN)
+        # are deuterated when their shared gene is True.
+        if len(deuteration_vector) == _N_EFFECTIVE:   # 18 elements
+            deuteration_vector = expand_deuteration_vector(deuteration_vector)
+            logger.debug(
+                "Received 18-element linked-pair vector; "
+                "expanded to 20-element canonical vector"
             )
+        elif len(deuteration_vector) != len(AMINO_ACIDS):   # not 18 or 20
+            raise ValueError(
+                f"deuteration_vector must have {_N_EFFECTIVE} (linked-pair) or "
+                f"{len(AMINO_ACIDS)} (canonical) elements, got {len(deuteration_vector)}"
+            )
+
         if not 0 <= d2o_percent <= 100:
-            raise ValueError(
-                f"d2o_percent must be between 0 and 100, "
-                f"{d2o_percent} received"
-            )
+            raise ValueError(f"d2o_percent must be in [0, 100], got {d2o_percent}")
 
         logger.debug(f"Applying deuteration: D₂O = {d2o_percent}%")
         deuterated_aas = [
             aa.code_3 for aa, deut in zip(AMINO_ACIDS, deuteration_vector) if deut
         ]
         if deuterated_aas:
-            logger.debug(f"Deuterated amino acids: {', '.join(deuterated_aas)}")
+            logger.debug(f"Deuterated AAs: {', '.join(deuterated_aas)}")
         else:
-            logger.debug(
-                "No amino acids selected for deuteration "
-                "(non-labile H will remain H)"
-            )
+            logger.debug("No AAs selected for non-labile deuteration")
 
-        # Reset counters — they are recomputed during this single pass
+        # Reset counters recomputed during this pass
         for key in self.stats:
             self.stats[key] = 0
 
         for mi, model in enumerate(self.structure):
             for ci, chain in enumerate(model):
                 for ri, residue in enumerate(chain):
-                    residue_name = residue.name.strip().upper()
-
-                    # ---- Determine deuteration intent for this residue ----
-                    aa_index       = AA_INDEX.get(residue_name)     # None for non-AA
+                    residue_name   = residue.name.strip().upper()
+                    aa_index       = AA_INDEX.get(residue_name)
                     should_deut_aa = (
                         aa_index is not None and deuteration_vector[aa_index]
                     )
@@ -588,7 +618,6 @@ class PdbDeuteration:
                     # Read pre-computed lability vector (always available)
                     labile_vector = self._lability_cache[(mi, ci, ri)]
 
-                    # ---- Single pass: modify + count ----
                     for atom, is_labile in zip(residue, labile_vector):
                         elem = atom.element.name
 
@@ -598,15 +627,14 @@ class PdbDeuteration:
                                 # D2O exchange: probabilistic
                                 if random.random() * 100 < d2o_percent:
                                     self._convert_atom_H_to_D(atom)
-                                    elem = "D"  # update local variable for counting
-                            elif should_deut_aa and aa_index is not None:
-                                # Non-labile H in a selected AA type
+                                    elem = "D"
+                            elif should_deut_aa:
+                                # Deterministic conversion for non-labile H in selected AA
                                 self._convert_atom_H_to_D(atom)
-                                elem = "D"  # update local variable for counting
+                                elem = "D"
 
-                        # --- Count (using potentially updated element) ---
+                        # Update counters using (possibly updated) element
                         self.stats['total_atoms'] += 1
-
                         if elem == "H":
                             self.stats['hydrogen_atoms'] += 1
                             if is_labile:
@@ -637,37 +665,19 @@ class PdbDeuteration:
         atom.element = gemmi.Element("D")
 
     # ------------------------------------------------------------------
-    #  KEPT FOR COMPATIBILITY — wraps the cache-based approach
+    #  KEPT FOR COMPATIBILITY
     # ------------------------------------------------------------------
 
     def _is_labile_hydrogen(self, residue: gemmi.Residue) -> List[bool]:
-        """
-        Determine for each atom in a residue if it's a labile hydrogen.
-
-        .. note::
-            This method is retained for API compatibility.  Internally,
-            ``PdbDeuteration`` now uses the pre-computed ``_lability_cache``
-            instead of calling this method repeatedly.  External code that
-            calls this method will still get correct results but will not
-            benefit from the caching.
-
-        Args:
-            residue: Residue to analyze.
-
-        Returns:
-            List[bool]: One boolean per atom in the residue.
-        """
+        """Retained for API compatibility; uses _compute_lability_for_residue internally."""
         return _compute_lability_for_residue(residue)
 
     def _count_atoms(self) -> None:
         """
-        Recount all atoms and update ``self.stats``.
+        Retained for API compatibility.
 
-        .. note::
-            This method is retained for API compatibility.  In the optimized
-            version, counting is done inside ``apply_deuteration`` so an
-            explicit call to ``_count_atoms`` is never needed.  Calling it
-            externally after ``apply_deuteration`` is safe but redundant.
+        In the optimised version, counting is done inside apply_deuteration.
+        Calling this externally after apply_deuteration is safe but redundant.
         """
         for key in self.stats:
             self.stats[key] = 0
@@ -711,11 +721,9 @@ class PdbDeuteration:
         """
         try:
             self.structure.write_pdb(str(Path(output_path)))
-            logger.debug(f"Structure saved: {output_path}")
+            logger.debug(f"Saved: {output_path}")
         except Exception as e:
-            raise IOError(f"Error while saving: {e}")
-
-
+            raise IOError(f"Error saving PDB: {e}")
 
 
 # ============================================================================
@@ -763,16 +771,14 @@ def main():
     # Load and deuterate
     try:
         deuterator = PdbDeuteration(config['input_pdb'])
-        deuterator.apply_deuteration(
-            config['deuteration_vector'],
-            config['d2o_percent']
-        )
-        print(f"Total Atoms              : {deuterator.stats['total_atoms']}")
-        print(f"Hydrogen atoms           : {deuterator.stats['hydrogen_atoms']}")
-        print(f"Labile Hydrogen atoms    : {deuterator.stats['labile_H']}")
-        print(f"Non Labile Hydrogen atoms: {deuterator.stats['non_labile_H']}")
-        print(f"Deuterium atoms          : {deuterator.stats['deuterium_atoms']}")
-        print(f"Labile Deuterium atoms   : {deuterator.stats['labile_D']}")
+        # apply_deuteration accepts 18 or 20 elements the CLI always produces 20
+        deuterator.apply_deuteration(config['deuteration_vector'], config['d2o_percent'])
+        print(f"Total Atoms               : {deuterator.stats['total_atoms']}")
+        print(f"Hydrogen atoms            : {deuterator.stats['hydrogen_atoms']}")
+        print(f"Labile Hydrogen atoms     : {deuterator.stats['labile_H']}")
+        print(f"Non Labile Hydrogen atoms : {deuterator.stats['non_labile_H']}")
+        print(f"Deuterium atoms           : {deuterator.stats['deuterium_atoms']}")
+        print(f"Labile Deuterium atoms    : {deuterator.stats['labile_D']}")
         print(f"Non Labile Deuterium atoms: {deuterator.stats['non_labile_D']}")
 
         deuterator.save(config['output_pdb'])

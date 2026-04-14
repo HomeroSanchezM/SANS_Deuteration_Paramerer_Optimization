@@ -57,7 +57,7 @@ def parse_arguments():
 Usage example:
   python __init__.py --population_size 50 --d2o_initial 60
   python __init__.py --elitism 5
-  python __init__.py -p 100 -e 3 -m 0.15 -c 0.8 -v 10
+  python __init__.py -p 100 -e 3 -v 10
         """
     )
 
@@ -132,11 +132,6 @@ def validate_config(cfg):
         )
 
     # Rates
-    if not (0.0 <= cfg["mutation_rate"] <= 1.0):
-        raise ValueError("mutation_rate must be in [0.0, 1.0]")
-
-    if not (0.0 <= cfg["crossover_rate"] <= 1.0):
-        raise ValueError("crossover_rate must be in [0.0, 1.0]")
 
     if not (0 <= cfg["d2o_variation_rate"] <= 100):
         raise ValueError("d2o_variation_rate must be in [0, 100]")
@@ -231,8 +226,6 @@ def merge_config(cli_args, ini_cfg=None):
         "population_size": pick(cli_args.population_size, ini_cfg.get("population_size"), 30),
         "elitism": pick(cli_args.elitism, ini_cfg.get("elitism"), 2),
         "d2o_variation_rate": pick(cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"), 5),
-        "mutation_rate": pick(cli_args.mutation_rate, ini_cfg.get("mutation_rate"), 0.15),
-        "crossover_rate": pick(cli_args.crossover_rate, ini_cfg.get("crossover_rate"), 0.8),
         "generations": pick(cli_args.generations, ini_cfg.get("generations"), 1),
         "seed": pick(cli_args.seed, ini_cfg.get("seed"), None),
         # Default: all 18 effective genes are modifiable
@@ -537,17 +530,17 @@ class Chromosome:
         """
         sigma = variation_range / 2  # contain ~95% of values 
 
-    while True:
-        variation = int(round(random.gauss(0, sigma)))
+        while True:
+            variation = int(round(random.gauss(0, sigma)))
 
-        # range control
-        if -variation_range <= variation <= variation_range:
-            new_value = self.d2o + variation
+            # range control
+            if -variation_range <= variation <= variation_range:
+                new_value = self.d2o + variation
 
-            # limit end bias
-            if 0 <= new_value <= 100:
-                self.d2o = new_value
-                return
+                # limit end bias
+                if 0 <= new_value <= 100:
+                    self.d2o = new_value
+                    return
 
     def __eq__(self, other: 'Chromosome') -> bool:
         """Checks identity based on deuteration vector + D2O (fitness excluded)."""
@@ -872,8 +865,6 @@ def display_config(cfg: dict):
     else:
         d2o_msg = "D2O values           : " + " ".join(str(v) for v in cfg["d2o"])
         print(d2o_msg)
-    print(f"Mutation rate        : {cfg['mutation_rate']}")
-    print(f"Crossover rate       : {cfg['crossover_rate']}")
     print(f"Generations          : {cfg['generations']}")
     if cfg['seed'] is not None:
         print(f"Random seed          : {cfg['seed']}")

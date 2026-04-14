@@ -7,9 +7,9 @@ set -e  # exit on error
 
 # ---- Fixed parameters (can be changed here) ----
 BATCH_SCRIPT="./parallel_process_pdb.sh"
-PROCESSES=12
-GENERATIONS=5
-ELITISM=1
+PROCESSES=120
+GENERATIONS=501
+ELITISM=10
 D2O_VAR=5
 RATIO_THRESH=0.01
 
@@ -23,7 +23,7 @@ NO_DEFAULT_REF=false
 # Add extra reference PDB paths here (space-separated), or leave empty.
 # These are passed via --ref to generate_deuterated_pdbs.py.
 # Example: REF_PDBS=("original/my_custom_ref1.pdb" "original/my_custom_ref2.pdb")
-REF_PDBS=("original/best_gfp/gen78_Chr071_d2o100_deut14.pdb" "original/best_gfp/gen87_Chr050_d2o100_deut09.pdb")
+REF_PDBS=()
 
 # ------------------------------------------------
 
@@ -65,7 +65,7 @@ for PROTEIN in "$@"; do
     # Extract just the protein name (no directory, no extension)
     PROTEIN_NAME=$(basename "${PROTEIN%.*}")
 
-    BASE_DIR="test_result_${PROTEIN_NAME}/convergence_simulation"
+    BASE_DIR="test_changes_result_conc_2.5_${PROTEIN_NAME}"
 
     for SEED in "${SEEDS[@]}"; do
         echo ""

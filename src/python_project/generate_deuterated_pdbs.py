@@ -11,9 +11,6 @@ By default, two reference PDBs are created in ref/:
   - <protein>_total_deuteration.pdb  (protonated in D2O)
   - <protein>_total_protonation.pdb  (protonated in H2O)
 
-Use --no_default_ref to skip default reference creation.
-Use --ref pdb1 pdb2 ... to add custom reference PDBs (can be combined with defaults).
-
 Usage examples:
   python generate_deuterated_pdbs.py input.pdb
   python generate_deuterated_pdbs.py input.pdb --no_default_ref --ref ref1.pdb ref2.pdb
@@ -38,6 +35,10 @@ import numpy as np
 
 from __init__ import (
     AMINO_ACIDS,
+    EFFECTIVE_AMINO_ACIDS,       # 18 effective genes
+    N_EFFECTIVE_AA,              
+    expand_deuteration_vector,   
+    merge_restrictions_to_18,    
     Chromosome,
     PopulationGenerator,
     restrictions as default_restrictions,
@@ -67,11 +68,12 @@ def get_pdb_filename(chrom: Chromosome) -> str:
 
     Format: gen{generation:02d}_Chr{index:03d}_d2o{d2o:03d}_deut{n_deut:02d}.pdb
 
-    Because generation and index are frozen at chromosome creation and preserved
-    on copy (tier-1), the filename is stable across generations for selected
-    individuals.
+    ``n_deut`` is the number of deuterated effective genes (0-18).  Because
+    the linked-pair scheme uses 18 genes, this value can now be at most 18
+    instead of 20 in the old per-AA scheme — filenames remain uniquely
+    descriptive.
     """
-    num_deut = sum(chrom.deuteration)
+    num_deut = sum(chrom.deuteration)   # count of True genes in 18-element vector
     return (f"gen{chrom.generation:02d}_Chr{chrom.index:03d}"
             f"_d2o{chrom.d2o:03d}_deut{num_deut:02d}.pdb")
 
@@ -135,9 +137,9 @@ def parse_arguments():
     pop.add_argument('--d2o', type=int, nargs='+', default=None, metavar='VALUE')
 
     # ---- Genetic ----
-    gen = parser.add_argument_group('Genetic parameters')
-    gen.add_argument('-m', '--mutation_rate', type=float)
-    gen.add_argument('-c', '--crossover_rate', type=float)
+    #gen = parser.add_argument_group('Genetic parameters')
+    #gen.add_argument('-m', '--mutation_rate', type=float)
+    #gen.add_argument('-c', '--crossover_rate', type=float)
 
     # ---- Execution ----
     exc = parser.add_argument_group('Execution parameters')
@@ -166,7 +168,14 @@ def parse_arguments():
 # ============================================================================
 
 def load_config_ini(path: str) -> Dict[str, Any]:
-    """Load genetic algorithm configuration from an INI file."""
+    """
+    Load genetic algorithm configuration from an INI file.
+
+    The [RESTRICTIONS] section is expected to contain 20 boolean entries
+    (one per canonical AA).  This function automatically converts them to the
+    18-element effective restriction vector used by the chromosome, applying
+    OR logic for linked pairs (ASN+ASP, GLU+GLN).
+    """
     if not Path(path).exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
@@ -189,10 +198,14 @@ def load_config_ini(path: str) -> Dict[str, Any]:
         cfg["seed"] = int(seed_val) if seed_val and seed_val.strip() != "" else None
 
     if config.has_section("RESTRICTIONS"):
-        cfg["restrictions"] = [
+        # Read 20 per-AA booleans, then merge linked pairs to get 18 effective genes
+        restrictions_20 = [
             config.getboolean("RESTRICTIONS", aa.code_3, fallback=True)
             for aa in AMINO_ACIDS
         ]
+        cfg["restrictions"] = merge_restrictions_to_18(restrictions_20)   # NEW: 18-element
+    else:
+        cfg["restrictions"] = [True] * N_EFFECTIVE_AA   # default: all modifiable
 
     if config.has_section("FITNESS"):
         cfg["q_max"]           = config.getfloat("FITNESS", "q_max",           fallback=None)
@@ -219,13 +232,12 @@ def merge_config(cli_args: argparse.Namespace,
         "population_size":    pick(cli_args.population_size,    ini_cfg.get("population_size"),   6),
         "elitism":            pick(cli_args.elitism,            ini_cfg.get("elitism"),           2),
         "d2o_variation_rate": pick(cli_args.d2o_variation_rate, ini_cfg.get("d2o_variation_rate"),5),
-        "mutation_rate":      pick(cli_args.mutation_rate,      ini_cfg.get("mutation_rate"),     0.15),
-        "crossover_rate":     pick(cli_args.crossover_rate,     ini_cfg.get("crossover_rate"),    0.8),
         "generations":        pick(cli_args.generations, ini_cfg.get("generations"), 1),
         "seed":               pick(cli_args.seed,         ini_cfg.get("seed"),         1),
         "q_max":              pick(cli_args.q_max,            ini_cfg.get("q_max"),            0.3),
         "ratio_threshold":    pick(cli_args.ratio_threshold,  ini_cfg.get("ratio_threshold"),  0.01),
-        "restrictions":       ini_cfg.get("restrictions", [True] * len(AMINO_ACIDS)),
+        # Default: all 18 effective genes are modifiable
+        "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),   # CHANGED
         "d2o":                pick(getattr(cli_args, 'd2o', None), ini_cfg.get("d2o"), None),
         # Reference options
         "no_default_ref":     cli_args.no_default_ref,
@@ -247,17 +259,22 @@ def validate_config(cfg: Dict[str, Any]) -> None:
         raise ValueError("elitism must be >= 0")
     if cfg["elitism"] > cfg["population_size"] // 3:
         raise ValueError(f"elitism must be ≤ population_size/3 (max {cfg['population_size'] // 3})")
-    if not (0.0 <= cfg["mutation_rate"] <= 1.0):
-        raise ValueError("mutation_rate must be in [0.0, 1.0]")
-    if not (0.0 <= cfg["crossover_rate"] <= 1.0):
-        raise ValueError("crossover_rate must be in [0.0, 1.0]")
     # d2o_variation_rate is only meaningful when no fixed d2o list is given
     if cfg.get("d2o") is None and not (0 <= cfg["d2o_variation_rate"] <= 100):
         raise ValueError("d2o_variation_rate must be in [0, 100]")
     if cfg["generations"] < 1:
         raise ValueError("generations must be >= 1")
-    if len(cfg["restrictions"]) != len(AMINO_ACIDS):
-        raise ValueError(f"restrictions length mismatch")
+
+    # Accept 18 (effective) or 20 (canonical) restriction lengths; auto-convert 20->18
+    restr_len = len(cfg["restrictions"])
+    if restr_len == len(AMINO_ACIDS):
+        cfg["restrictions"] = merge_restrictions_to_18(cfg["restrictions"])
+    elif restr_len != N_EFFECTIVE_AA:
+        raise ValueError(
+            f"restrictions length ({restr_len}) must be "
+            f"{N_EFFECTIVE_AA} (effective) or {len(AMINO_ACIDS)} (canonical)"
+        )
+
     if cfg["q_max"] <= 0:
         raise ValueError("q_max must be positive")
     if not (0.0 <= cfg["ratio_threshold"] <= 1.0):
@@ -276,7 +293,7 @@ def validate_config(cfg: Dict[str, Any]) -> None:
     if cfg.get("no_default_ref") and not cfg.get("ref"):
         logger.warning(
             "--no_default_ref is set with no --ref provided. "
-            "Ensure ref/ already contains .dat reference files before fitness evaluation."
+            "Ensure ref/ already contains .dat reference files."
         )
     # Validate user-provided ref paths
     if cfg.get("ref"):
@@ -307,28 +324,36 @@ def create_output_directory(output_dir: Optional[str], pdb_file: str):
 # ============================================================================
 
 def create_protonated_reference_pdbs(pdb_file: str,
-                                     ref_dir: Path,
-                                     restrictions: List[bool]) -> None:
-    """Create protonated-in-D2O and protonated-in-H2O reference PDB files (default refs)."""
+                                      ref_dir: Path,
+                                      restrictions: List[bool]) -> None:
+    """
+    Create the two default reference PDB files:
+      - protonated protein in D2O  (all labile H exchanged via d2o=100)
+      - protonated protein in H2O  (no deuteration, d2o=0)
+
+    Reference chromosomes use a 20-element all-False deuteration vector
+    (no non-labile deuteration) because we deliberately want to isolate the
+    effect of D2O exchange.  The vector length must be 20 to match the
+    canonical AMINO_ACIDS list; pdb_deuteration accepts both 18 and 20.
+    """
     logger.info(">>> Creating default reference PDBs (protonated in D2O / H2O)")
     no_restrictions = [True] * len(AMINO_ACIDS)
 
+    # Reference chromosomes use a full-size (20-element) all-False deuteration
+    # vector since no amino-acid-type deuteration is wanted for the references.
+    # We bypass the 18-gene Chromosome class and call PdbDeuteration directly.
+    ref_deut_vector = [False] * len(AMINO_ACIDS)   # 20-element, no AA deuteration
+
     # Protonated in D2O (all labile H exchanged)
-    deut_chrom = Chromosome(AMINO_ACIDS, no_restrictions, fixed_d2o=None)
-    deut_chrom.deuteration = [False] * len(AMINO_ACIDS)
-    deut_chrom.d2o = 100
-    deut_pdb = PdbDeuteration(pdb_file)
-    deut_pdb.apply_deuteration(deut_chrom.deuteration, deut_chrom.d2o)
+    deut_pdb  = PdbDeuteration(pdb_file)
+    deut_pdb.apply_deuteration(ref_deut_vector, d2o_percent=100)
     deut_path = ref_dir / f"{Path(pdb_file).stem}_total_deuteration.pdb"
     deut_pdb.save(str(deut_path))
     logger.info(f"  Deuteration reference : {deut_path.name}")
 
-    # Protonated in H2O (all H)
-    prot_chrom = Chromosome(AMINO_ACIDS, no_restrictions, fixed_d2o=None)
-    prot_chrom.deuteration = [False] * len(AMINO_ACIDS)
-    prot_chrom.d2o = 0
-    prot_pdb = PdbDeuteration(pdb_file)
-    prot_pdb.apply_deuteration(prot_chrom.deuteration, prot_chrom.d2o)
+    # Protonated in H2O (all H, no exchange)
+    prot_pdb  = PdbDeuteration(pdb_file)
+    prot_pdb.apply_deuteration(ref_deut_vector, d2o_percent=0)
     prot_path = ref_dir / f"{Path(pdb_file).stem}_total_protonation.pdb"
     prot_pdb.save(str(prot_path))
     logger.info(f"  Protonation reference : {prot_path.name}")
@@ -350,22 +375,42 @@ def copy_user_reference_pdbs(ref_paths: List[str], ref_dir: Path) -> None:
 def generate_pdbs_for_chromosomes(pdb_file: str,
                                    chromosomes: List[Chromosome],
                                    output_dir: Path) -> List[str]:
-    logger.info(f"Generating {len(chromosomes)} deuterated PDB file(s)...")
+    """
+    Generate one deuterated PDB file per chromosome.
+
+    Each chromosome carries an 18-element deuteration vector (one gene per
+    linked group in EFFECTIVE_AMINO_ACIDS).  Before passing it to
+    PdbDeuteration, we expand it to the 20-element canonical vector so that
+    both amino acids in each linked pair (ASN+ASP, GLU+GLN) are deuterated
+    when their shared gene is True.
+
+    The expansion is handled transparently by pdb_deuteration.apply_deuteration,
+    but we call expand_deuteration_vector() explicitly here for logging clarity.
+    """
+    logger.info(f"Generating {len(chromosomes)} deuterated PDB file(s)…")
     generated = []
+
     for chrom in chromosomes:
         filename = get_pdb_filename(chrom)
         out_path = output_dir / filename
+
+        # Expand 18-gene vector -> 20-element canonical vector before PDB ops.
+        # This ensures ASN & ASP (or GLU & GLN) are both deuterated when their
+        # shared effective gene is True.
+        deut_vector_20 = expand_deuteration_vector(chrom.deuteration)   # NEW
+
         try:
             deuterator = PdbDeuteration(pdb_file)
-            deuterator.apply_deuteration(chrom.deuteration, chrom.d2o)
-            chrom.H = deuterator.stats['hydrogen_atoms']
-            chrom.D = deuterator.stats['deuterium_atoms']
+            deuterator.apply_deuteration(deut_vector_20, chrom.d2o)     # 20-element
+            chrom.H           = deuterator.stats['hydrogen_atoms']
+            chrom.D           = deuterator.stats['deuterium_atoms']
             chrom.non_labile_D = deuterator.stats['non_labile_D']
             deuterator.save(str(out_path))
             generated.append(str(out_path))
             logger.debug(f"  Written: {filename}")
         except Exception as exc:
             logger.error(f"  FAILED {filename}: {exc}")
+
     logger.info(f"  {len(generated)} PDB file(s) written.")
     return generated
 
@@ -381,12 +426,10 @@ def run_batch_processing(output_dir: Path,
     Execute the external batch script for Pepsi-SANS simulation.
 
     Args:
-        output_dir:     Directory containing PDB files (and ref/ subfolder).
-        batch_script:   Path to the shell script.
-        new_pdb_files:  If given, a list of absolute PDB file paths to process.
-                        Only these files will be simulated (tier-2/3 incremental
-                        update).  If None, all PDB files in output_dir are
-                        processed (generation 0 full run).
+        output_dir:    Directory containing PDB files and ref/ subfolder.
+        batch_script:  Path to the shell script.
+        new_pdb_files: If given, only these files are simulated (incremental).
+                       If None, all PDB files in output_dir are processed.
 
     Returns:
         Absolute path (string) to the primus_out directory.
@@ -398,8 +441,6 @@ def run_batch_processing(output_dir: Path,
     tmp_list_file: Optional[str] = None
     try:
         if new_pdb_files:
-            # Write the list of new PDB files to a temporary text file.
-            # The batch script reads this list and processes only those files.
             fd, tmp_list_file = tempfile.mkstemp(suffix=".txt", prefix="pdb_list_")
             with os.fdopen(fd, 'w') as fh:
                 for p in new_pdb_files:
@@ -413,10 +454,9 @@ def run_batch_processing(output_dir: Path,
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         logger.debug(result.stdout)
 
-        # Derive primus_out directory (same logic as the batch script)
         folder_name = output_dir.name
-        prefix = folder_name.replace("_deuterated_pdbs", "")
-        primus_dir = str(output_dir.parent / f"{prefix}_primus_out")
+        prefix      = folder_name.replace("_deuterated_pdbs", "")
+        primus_dir  = str(output_dir.parent / f"{prefix}_primus_out")
         logger.info(f"  SANS data directory  : {primus_dir}")
         return primus_dir
 
@@ -444,13 +484,10 @@ def evaluate_fitness(primus_dir: str,
     """
     Evaluate fitness for all chromosomes by matching .dat filenames.
 
-    The function calls :func:`evaluate_population_fitness` which returns raw
-    fitness scores for every .dat file found in *primus_dir* (alphabetical
-    order).  Each score is then mapped back to the corresponding chromosome
-    via the chromosome's expected filename stem.
-
-    Tier-1 chromosomes already have valid .dat files from a previous run;
-    their fitness is re-read from those unchanged files (values are identical).
+    Calls evaluate_population_fitness() which returns raw fitness scores for
+    every .dat file in primus_dir (alphabetical order).  Each score is then
+    mapped back to the corresponding chromosome via the chromosome's expected
+    filename stem.
 
     Args:
         primus_dir:       Path to the Pepsi-SANS output directory.
@@ -464,11 +501,9 @@ def evaluate_fitness(primus_dir: str,
     logger.info(">>> Evaluating fitness from SANS data…")
     logger.info("=" * 70)
 
-    # Build stem → chromosome lookup (one entry per chromosome)
-    chrom_by_stem: Dict[str, Chromosome] = {}
-    for chrom in population:
-        stem = Path(get_pdb_filename(chrom)).stem
-        chrom_by_stem[stem] = chrom
+    chrom_by_stem: Dict[str, Chromosome] = {
+        Path(get_pdb_filename(c)).stem: c for c in population
+    }
 
     try:
         fitness_scores, dat_files, ratios = evaluate_population_fitness(
@@ -480,8 +515,7 @@ def evaluate_fitness(primus_dir: str,
         logger.error(f"Fitness evaluation failed: {exc}")
         raise RuntimeError(f"Fitness evaluation error: {exc}") from exc
 
-    matched = 0
-    unmatched_files = []
+    matched, unmatched_files = 0, []
     for score, file_path, ratio in zip(fitness_scores, dat_files, ratios):
         stem = Path(file_path).stem
         if stem in chrom_by_stem:
@@ -512,16 +546,8 @@ def cleanup_non_tier1_files(output_dir: Path,
     """
     Remove all PDB and SANS output files that do NOT belong to tier-1 chromosomes.
 
-    Tier-1 chromosomes retain their original filenames (gen{W}_Chr{X}…), so
-    their files are simply identified by stem and kept.  Everything else under
-    the ``gen*_Chr*`` pattern is deleted.
-
-    The ``ref/`` subfolder is never touched.
-
-    Args:
-        output_dir:       Directory that contains PDB files.
-        primus_dir:       Directory that contains SANS .dat/.out files (may be None).
-        tier1_population: Chromosomes selected for tier-1 of the *new* generation.
+    Tier-1 chromosomes retain their original creation filenames so their files
+    are easily identified by stem.  The ref/ subfolder is never touched.
     """
     tier1_stems: Set[str] = {Path(get_pdb_filename(c)).stem for c in tier1_population}
 
@@ -584,12 +610,13 @@ def save_population_summary(population: List[Chromosome],
     """
     Save a detailed ranked summary of the population to a text file.
 
-    Chromosomes are listed in descending fitness order using their original
-    (creation) filenames so that every row can be traced back to a specific
-    PDB / SANS file.
+    The 'AA' column now shows the number of deuterated *effective genes*
+    (0-18) rather than canonical AAs (0-20), because the chromosome operates
+    on the 18-gene linked-pair space.
     """
-    summary_file = output_dir / f"generation_{generation:02d}_summary.txt"
-    fitness_values = [population[i].fitness for i in sorted_indices if population[i].fitness is not None]
+    summary_file  = output_dir / f"generation_{generation:02d}_summary.txt"
+    fitness_values = [population[i].fitness for i in sorted_indices
+                      if population[i].fitness is not None]
 
     with open(summary_file, 'w', encoding='utf-8') as fh:
         fh.write("=" * 150 + "\n")
@@ -601,9 +628,11 @@ def save_population_summary(population: List[Chromosome],
             fh.write(f"Average fitness : {float(np.mean(fitness_values)):.6f}\n")
             fh.write(f"Worst fitness   : {min(fitness_values):.6f}\n")
         fh.write("\n")
+        # Note: 'AA' column = count of deuterated effective genes (max 18)
         fh.write(
             f"{'Rank':<6} {'PDB filename (creation name)':<55} "
-            f"{'D2O%':<6} {'AA':<5} {'ratio':<14} {'Fitness':<14} {'D%':<14} {'Non_labile_D%'} {'Created':<12}\n"
+            f"{'D2O%':<6} {'AA':<5} {'ratio':<14} {'Fitness':<14} "
+            f"{'D%':<14} {'Non_labile_D%'} {'Created':<12}\n"
         )
         fh.write("-" * 150 + "\n")
         for rank, idx in enumerate(sorted_indices, 1):
@@ -624,11 +653,24 @@ def save_population_summary(population: List[Chromosome],
 def save_best_fitness_summary(best_chrom: Chromosome,
                                generation: int,
                                summary_path: Path) -> None:
-    deut_aas = [AMINO_ACIDS[i].code_3 for i, d in enumerate(best_chrom.deuteration) if d]
+    """
+    Append one row per generation to the best-fitness CSV.
+
+    ``deuterated_aa_list`` now contains the code_3 strings of EFFECTIVE_AMINO_ACIDS
+    (e.g. "ASN+ASP" for the linked pair) rather than individual canonical AAs.
+    This preserves the information that both members of the pair are deuterated.
+    """
+    # Use EFFECTIVE_AMINO_ACIDS codes so linked pairs appear as "ASN+ASP" / "GLU+GLN"
+    deut_aas = [
+        EFFECTIVE_AMINO_ACIDS[i].code_3
+        for i, d in enumerate(chrom.deuteration if False else best_chrom.deuteration)
+        if d
+    ]
     deut_str = ";".join(deut_aas) if deut_aas else "none"
     filename = get_pdb_filename(best_chrom)
     d_str = (best_chrom.D / (best_chrom.H + best_chrom.D)) * 100
     non_labile_d_str = (best_chrom.non_labile_D / (best_chrom.H + best_chrom.D)) * 100
+
     write_header = not summary_path.exists()
     with open(summary_path, 'a', encoding='utf-8') as fh:
         if write_header:
@@ -638,10 +680,14 @@ def save_best_fitness_summary(best_chrom: Chromosome,
             )
         fh.write(
             f"{generation},{best_chrom.fitness:.8f},{best_chrom.d2o},"
-            f"{sum(best_chrom.deuteration)},{best_chrom.ratio:.3f},{d_str:.2f},{non_labile_d_str:.2f},"
+            f"{sum(best_chrom.deuteration)},{best_chrom.ratio:.3f},"
+            f"{d_str:.2f},{non_labile_d_str:.2f},"
             f"{deut_str},{filename},{best_chrom.generation},{best_chrom.index}\n"
         )
-    logger.info(f"  Best fitness CSV: gen={generation}, fitness={best_chrom.fitness:.6f}, D2O={best_chrom.d2o}%")
+    logger.info(
+        f"  Best fitness CSV: gen={generation}, "
+        f"fitness={best_chrom.fitness:.6f}, D2O={best_chrom.d2o}%"
+    )
 
 
 # ============================================================================
@@ -658,7 +704,10 @@ def check_fitness_non_decreasing(population, sorted_indices, previous_best, gene
             f"best fitness decreased from {previous_best:.6f} to {current_best:.6f}."
         )
     else:
-        logger.info(f"  Best fitness (gen {generation}): {current_best:.6f} (Δ={current_best - previous_best:+.6f})")
+        logger.info(
+            f"  Best fitness (gen {generation}): {current_best:.6f} "
+            f"(Δ={current_best - previous_best:+.6f})"
+        )
     return current_best
 
 
@@ -666,11 +715,12 @@ def check_fitness_non_decreasing(population, sorted_indices, previous_best, gene
 #                       FINAL RESULT FOLDER
 # ============================================================================
 
-def create_final_result_folder(best_chrom, pdb_stem, output_dir, primus_dir, best_summary_path):
-    folder_name = output_dir.name
-    prefix = folder_name.replace("_deuterated_pdbs", "")
-    final_dir = output_dir.parent / f"{prefix}_final_results"
-    primus_path = Path(primus_dir)
+def create_final_result_folder(best_chrom, pdb_stem, output_dir,
+                                primus_dir, best_summary_path):
+    folder_name  = output_dir.name
+    prefix       = folder_name.replace("_deuterated_pdbs", "")
+    final_dir    = output_dir.parent / f"{prefix}_final_results"
+    primus_path  = Path(primus_dir)
 
     pdb_dir      = final_dir / "pdb"
     pdb_ref_dir  = pdb_dir / "ref"
@@ -685,7 +735,7 @@ def create_final_result_folder(best_chrom, pdb_stem, output_dir, primus_dir, bes
     logger.info(">>> Assembling final result folder")
     logger.info(f"  Destination : {final_dir.absolute()}")
 
-    # Single-row CSV
+    # Single-row CSV (header + best row)
     csv_dest = final_dir / f"{base_name}.csv"
     with open(best_summary_path, "r", encoding="utf-8") as src_fh:
         lines = [l for l in src_fh.readlines() if l.strip()]
@@ -698,7 +748,7 @@ def create_final_result_folder(best_chrom, pdb_stem, output_dir, primus_dir, bes
     best_pdb_src = output_dir / get_pdb_filename(best_chrom)
     if best_pdb_src.exists():
         shutil.copy2(best_pdb_src, pdb_dir / f"{base_name}.pdb")
-        logger.info(f"  Best PDB copied")
+        logger.info("  Best PDB copied")
     else:
         logger.warning(f"  Best PDB NOT found: {best_pdb_src.name}")
 
@@ -761,7 +811,7 @@ def main():
 
     # ---------- Display configuration ----------
     logger.info("=" * 70)
-    logger.info("DEUTERATED PDB GENERATION — GENETIC ALGORITHM")
+    logger.info("                SANS DEUTERATION OPTIMISATION")
     logger.info("=" * 70)
     logger.info(f"Source PDB           : {cfg['pdb_file']}")
     logger.info(f"Population size      : {cfg['population_size']}")
@@ -770,12 +820,13 @@ def main():
         logger.info(f"D2O variation rate   : ±{cfg['d2o_variation_rate']}%")
     else:
         logger.info(f"D2O fixed values     : {cfg['d2o']}")
-    logger.info(f"Mutation rate        : {cfg['mutation_rate']}")
-    logger.info(f"Crossover rate       : {cfg['crossover_rate']}")
     logger.info(f"Generations          : {cfg['generations']}")
     logger.info(f"Q max (fitness)      : {cfg['q_max']} Å⁻¹")
     logger.info(f"Ratio threshold      : {cfg['ratio_threshold']}")
-    logger.info(f"Default references   : {'no' if cfg.get('no_default_ref') else 'yes (protonated in D2O / H2O)'}")
+    logger.info(f"Effective gene count : {N_EFFECTIVE_AA}  "
+                f"(ASN+ASP linked, GLU+GLN linked)")   # NEW info line
+    logger.info(f"Default references   : "
+                f"{'no' if cfg.get('no_default_ref') else 'yes (protonated in D2O / H2O)'}")
     if cfg.get("ref"):
         logger.info(f"Extra references     : {cfg['ref']}")
     logger.info("=" * 70)
@@ -803,8 +854,8 @@ def main():
 
     # ---------- Initialise population generator ----------
     generator = PopulationGenerator(
-        aa_list=AMINO_ACIDS,
-        modifiable=cfg['restrictions'],
+        aa_list=EFFECTIVE_AMINO_ACIDS,        # 18 effective genes
+        modifiable=cfg['restrictions'],        # 18-element list
         population_size=cfg['population_size'],
         elitism=cfg['elitism'],
         d2o_variation_rate=cfg['d2o_variation_rate'],
@@ -836,8 +887,6 @@ def main():
 
         new_population = generator.generate_next_generation(
             previous_population=population,
-            mutation_rate=cfg['mutation_rate'],
-            crossover_rate=cfg['crossover_rate'],
             d2o_variation_rate=cfg['d2o_variation_rate'],
             new_generation=gen,
         )
@@ -848,12 +897,15 @@ def main():
         cleanup_non_tier1_files(output_dir, primus_dir, tier1)
 
         new_pdb_files = generate_pdbs_for_chromosomes(str(pdb_path), tier2_and_3, output_dir)
-        primus_dir = run_batch_processing(output_dir, cfg['batch_script'], new_pdb_files=new_pdb_files)
+        primus_dir    = run_batch_processing(output_dir, cfg['batch_script'],
+                                             new_pdb_files=new_pdb_files)
 
         evaluate_fitness(primus_dir, new_population, cfg['q_max'], cfg['ratio_threshold'])
 
-        sorted_indices = get_sorted_indices(new_population)
-        previous_best_fitness = check_fitness_non_decreasing(new_population, sorted_indices, previous_best_fitness, gen)
+        sorted_indices        = get_sorted_indices(new_population)
+        previous_best_fitness = check_fitness_non_decreasing(
+            new_population, sorted_indices, previous_best_fitness, gen
+        )
         display_population_summary(new_population, sorted_indices, gen)
         save_population_summary(new_population, sorted_indices, output_dir, gen)
         save_best_fitness_summary(new_population[sorted_indices[0]], gen, best_summary_path)
@@ -865,10 +917,15 @@ def main():
     logger.info("GENETIC ALGORITHM COMPLETED SUCCESSFULLY!")
     logger.info("=" * 70)
     best = population[sorted_indices[0]]
-    logger.info(f"Best solution:")
+    logger.info("Best solution:")
     logger.info(f"  File    : {get_pdb_filename(best)}")
     logger.info(f"  D2O     : {best.d2o}%")
-    logger.info(f"  AAs     : {sum(best.deuteration)}/20 deuterated")
+    # Report effective genes deuterated (max 18) + canonical AAs affected (max 20)
+    deut_genes   = sum(best.deuteration)
+    deut_vec_20  = expand_deuteration_vector(best.deuteration)
+    deut_aa_count = sum(deut_vec_20)
+    logger.info(f"  Deut. genes : {deut_genes}/18 effective genes  "
+                f"→ {deut_aa_count}/20 canonical AAs deuterated")
     logger.info(f"  %D      : {(best.D / (best.H + best.D))*100:.2f}%")
     logger.info(f"  Fitness : {best.fitness:.6f}")
 

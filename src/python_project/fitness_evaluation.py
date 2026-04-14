@@ -305,7 +305,7 @@ def scaling_and_compare(q, I, references, q_max, ratio):
         ratio:      Imax / background ratio for the simulated curve
 
     Returns:
-        float: product(area_i) * ratio * 10 000 000
+        float: product(area_i) * ratio * 10 000
     """
     q_trunc, I_trunc = truncate_to_q_max(q, I, q_max)
 
@@ -317,7 +317,7 @@ def scaling_and_compare(q, I, references, q_max, ratio):
         area = calculate_area_difference(q_trunc, I_scaled, I_ref_regrid)
         fitness_product *= area
 
-    return fitness_product * ratio * 10000000
+    return fitness_product * ratio * 10000
 
 
 def fitness(q, I, references, q_max, file_path, ratio_threshold=0.01):
