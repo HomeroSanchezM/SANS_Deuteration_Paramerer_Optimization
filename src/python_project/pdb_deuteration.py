@@ -460,6 +460,14 @@ class PdbDeuteration:
         pdb_path (Path)           : Path to the PDB file
         structure (gemmi.Structure): Parsed PDB structure
         stats (dict)              : Counters for H/D atoms (updated after each call)
+        missing_aa (List[str])    : 3-letter codes of AAs absent from the structure.
+                                    Populated once at __init__ and never modified.
+        aa_count (Dict[str, int]) : Number of unique residues per AA type (3-letter
+                                    code → count). Populated once at __init__.
+        aa_hydrogen_count (Dict[str, int]): Total original H atoms contributed by
+                                    each AA type (3-letter code → H count).
+                                    Populated once at __init__ from the unmodified
+                                    structure.
         _lability_cache (dict)    : Pre-computed per-residue lability vectors
                                     keyed by (model_idx, chain_idx, residue_idx)
     """
@@ -470,6 +478,8 @@ class PdbDeuteration:
 
         The lability map is computed here once (single pass over all atoms),
         and the initial atom counts are derived from that same pass.
+        missing_aa, aa_count and aa_hydrogen_count are also populated here
+        from the unmodified structure and are never reset afterwards.
 
         Args:
             pdb_file: Path to the PDB file.
@@ -502,6 +512,17 @@ class PdbDeuteration:
             'non_labile_D':   0,
         }
 
+        # Per-AA composition statistics
+
+        # Number of unique residues per AA type
+        self.aa_count: Dict[str, int] = {aa.code_3: 0 for aa in AMINO_ACIDS}
+
+        # Total original H atoms contributed by each AA type
+        self.aa_hydrogen_count: Dict[str, int] = {aa.code_3: 0 for aa in AMINO_ACIDS}
+
+        # 3-letter codes of AAs completely absent from the structure
+        self.missing_aa: List[str] = []
+
         # Per-residue lability vectors: (model_idx, chain_idx, residue_idx) -> List[bool]
         self._lability_cache: Dict[Tuple[int, int, int], List[bool]] = {}
 
@@ -513,18 +534,48 @@ class PdbDeuteration:
     # ------------------------------------------------------------------
 
     def _build_lability_cache_and_count(self) -> None:
-        """Build lability cache and initialise stats in a single structure traversal."""
+        """
+        Build lability cache, initialise stats, and composition
+        attributes (aa_count, aa_hydrogen_count, missing_aa) in a single
+        structure traversal.
+        """
+        # Reset dynamic counters
         for key in self.stats:
             self.stats[key] = 0
+
+        # Reset composition counters
+        for code in self.aa_count:
+            self.aa_count[code] = 0
+        for code in self.aa_hydrogen_count:
+            self.aa_hydrogen_count[code] = 0
+
+        # Track unique residues
+        seen_residues: set = set()
 
         for mi, model in enumerate(self.structure):
             for ci, chain in enumerate(model):
                 for ri, residue in enumerate(chain):
+                    resname = residue.name.strip().upper()
+
                     # Compute lability once for this residue
                     labile_vector = _compute_lability_for_residue(residue)
                     self._lability_cache[(mi, ci, ri)] = labile_vector
 
-                    # Count atoms using the freshly computed lability vector
+                    # Composition counting
+                    if resname in AA_INDEX:
+                        res_key = (chain.name, str(residue.seqid), resname)
+                        is_new_residue = res_key not in seen_residues
+
+                        if is_new_residue:
+                            seen_residues.add(res_key)
+                            self.aa_count[resname] += 1
+
+                            # Count original H atoms in this unique residue
+                            for atom in residue:
+                                if atom.element.name == "H":
+                                    self.aa_hydrogen_count[resname] += 1
+
+                    # Global atom stats (all models, all residues)
                     for atom, is_labile in zip(residue, labile_vector):
                         elem = atom.element.name
                         self.stats['total_atoms'] += 1
@@ -542,6 +593,16 @@ class PdbDeuteration:
                                 self.stats['labile_D'] += 1
                             else:
                                 self.stats['non_labile_D'] += 1
+
+        # Derive missing_aa from the freshly computed aa_count
+        self.missing_aa = [
+            code for code, count in self.aa_count.items() if count == 0
+        ]
+
+        if self.missing_aa:
+            logger.debug(
+                f"AAs absent from structure: {', '.join(self.missing_aa)}"
+            )
 
     # ------------------------------------------------------------------
     #  PUBLIC: deuteration
@@ -575,7 +636,7 @@ class PdbDeuteration:
             ValueError: If deuteration_vector has neither 18 nor 20 elements.
             ValueError: If d2o_percent is outside [0, 100].
         """
-        # ---- Expand 18 -> 20 if a linked-pair chromosome vector is supplied ----
+        # Expand 18 -> 20 if a linked-pair chromosome vector is supplied 
         # This ensures that both AAs in each linked pair (ASN+ASP, GLU+GLN)
         # are deuterated when their shared gene is True.
         if len(deuteration_vector) == _N_EFFECTIVE:   # 18 elements
@@ -602,7 +663,7 @@ class PdbDeuteration:
         else:
             logger.debug("No AAs selected for non-labile deuteration")
 
-        # Reset counters recomputed during this pass
+        # Reset only dynamic atom-level counters
         for key in self.stats:
             self.stats[key] = 0
 
@@ -771,7 +832,14 @@ def main():
     # Load and deuterate
     try:
         deuterator = PdbDeuteration(config['input_pdb'])
-        # apply_deuteration accepts 18 or 20 elements the CLI always produces 20
+
+        # Report composition stats from the unmodified structure
+        logger.info("--- Protein composition ---")
+        total_res = sum(deuterator.aa_count.values())
+        logger.info(f"Total residues : {total_res}")
+        if deuterator.missing_aa:
+            logger.info(f"Absent AAs     : {', '.join(deuterator.missing_aa)}")
+
         deuterator.apply_deuteration(config['deuteration_vector'], config['d2o_percent'])
         print(f"Total Atoms               : {deuterator.stats['total_atoms']}")
         print(f"Hydrogen atoms            : {deuterator.stats['hydrogen_atoms']}")

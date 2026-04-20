@@ -36,9 +36,10 @@ import numpy as np
 from __init__ import (
     AMINO_ACIDS,
     EFFECTIVE_AMINO_ACIDS,       # 18 effective genes
-    N_EFFECTIVE_AA,              
-    expand_deuteration_vector,   
-    merge_restrictions_to_18,    
+    N_EFFECTIVE_AA,
+    AA_GROUP_INDEX,          
+    expand_deuteration_vector,
+    merge_restrictions_to_18,
     Chromosome,
     PopulationGenerator,
     restrictions as default_restrictions,
@@ -56,6 +57,14 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# AA display labels matching canonical AMINO_ACIDS order (used for plots)
+_AA_PLOT_LABELS = [
+    "Ala", "Arg", "Asn", "Asp", "Cys",
+    "Glu", "Gln", "Gly", "His", "Ile",
+    "Leu", "Lys", "Met", "Phe", "Pro",
+    "Ser", "Thr", "Trp", "Tyr", "Val",
+]
 
 
 # ============================================================================
@@ -136,11 +145,6 @@ def parse_arguments():
     pop.add_argument('--d2o-var', '--d2o_variation_rate', dest='d2o_variation_rate', type=int)
     pop.add_argument('--d2o', type=int, nargs='+', default=None, metavar='VALUE')
 
-    # ---- Genetic ----
-    #gen = parser.add_argument_group('Genetic parameters')
-    #gen.add_argument('-m', '--mutation_rate', type=float)
-    #gen.add_argument('-c', '--crossover_rate', type=float)
-
     # ---- Execution ----
     exc = parser.add_argument_group('Execution parameters')
     exc.add_argument('-g', '--generations', type=int)
@@ -203,7 +207,7 @@ def load_config_ini(path: str) -> Dict[str, Any]:
             config.getboolean("RESTRICTIONS", aa.code_3, fallback=True)
             for aa in AMINO_ACIDS
         ]
-        cfg["restrictions"] = merge_restrictions_to_18(restrictions_20)   # NEW: 18-element
+        cfg["restrictions"] = merge_restrictions_to_18(restrictions_20)
     else:
         cfg["restrictions"] = [True] * N_EFFECTIVE_AA   # default: all modifiable
 
@@ -236,8 +240,7 @@ def merge_config(cli_args: argparse.Namespace,
         "seed":               pick(cli_args.seed,         ini_cfg.get("seed"),         1),
         "q_max":              pick(cli_args.q_max,            ini_cfg.get("q_max"),            0.3),
         "ratio_threshold":    pick(cli_args.ratio_threshold,  ini_cfg.get("ratio_threshold"),  0.01),
-        # Default: all 18 effective genes are modifiable
-        "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),   # CHANGED
+        "restrictions":       ini_cfg.get("restrictions", [True] * N_EFFECTIVE_AA),
         "d2o":                pick(getattr(cli_args, 'd2o', None), ini_cfg.get("d2o"), None),
         # Reference options
         "no_default_ref":     cli_args.no_default_ref,
@@ -320,6 +323,126 @@ def create_output_directory(output_dir: Optional[str], pdb_file: str):
 
 
 # ============================================================================
+#                       PROTEIN COMPOSITION ANALYSIS
+# ============================================================================
+
+def apply_missing_aa_to_restrictions(restrictions: List[bool],
+                                     missing_aa: List[str]) -> List[bool]:
+    """
+    Return a copy of *restrictions* with the effective genes corresponding to
+    absent amino acids forced to False.
+
+    When a linked group (e.g. ASN+ASP) has ALL its members absent, the
+    group gene is disabled.  If only one member of a linked pair is absent
+    the gene remains as configured in *restrictions* — the present member
+    will still be deuterated, which is the conservative choice.
+
+    Args:
+        restrictions: 18-element effective-gene restriction list.
+        missing_aa:   List of 3-letter codes absent from the protein
+                      (from PdbDeuteration.missing_aa).
+
+    Returns:
+        New 18-element list with absent-AA genes disabled.
+    """
+    from __init__ import LINKED_AA_GROUPS  # avoid circular at module level
+
+    updated = list(restrictions)
+    missing_set = set(missing_aa)
+
+    for gene_idx, group in enumerate(LINKED_AA_GROUPS):
+        # Disable the gene only when every AA in the group is absent
+        if all(code in missing_set for code in group):
+            if updated[gene_idx]:
+                logger.info(
+                    f"  Restriction auto-disabled for gene {gene_idx} "
+                    f"({'+'.join(group)}): absent from structure"
+                )
+                updated[gene_idx] = False
+
+    return updated
+
+
+def generate_protein_plots(pdb_analyzer: PdbDeuteration,
+                            plot_dir: Path) -> None:
+    """
+    Generate and save two barplot PNGs into *plot_dir*:
+
+      aa_count.png       — number of unique residues per AA type
+                           (mirrors barplot.py)
+      aa_hydrogen_count.png — total H atoms contributed by each AA type
+                           (mirrors barplot_H.py)
+
+    Both plots use horizontal bars with the canonical AA order reversed
+    (Val at top, Ala at bottom) to match the reference scripts.
+
+    Args:
+        pdb_analyzer: A PdbDeuteration instance whose aa_count and
+                      aa_hydrogen_count attributes have been populated
+                      (i.e. __init__ has completed).
+        plot_dir:     Directory where PNG files will be written.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')   # non-interactive backend for file output
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available — skipping protein composition plots")
+        return
+
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    codes  = [aa.code_3 for aa in AMINO_ACIDS]          # 20 codes, forward order
+    labels = _AA_PLOT_LABELS                             # short labels, forward order
+
+    # Reversed order: Val at top, Ala at bottom (horizontal bar convention)
+    codes_rev  = codes[::-1]
+    labels_rev = labels[::-1]
+
+    #  Plot 1 : AA residue counts                                        
+    values_count = [pdb_analyzer.aa_count.get(code, 0) for code in codes_rev]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.barh(labels_rev, values_count, color='steelblue')
+    ax.set_xlabel("Number of residues", fontsize=12)
+    ax.set_ylabel("Amino acid", fontsize=12)
+    ax.set_title("Residue count per amino acid type", fontsize=13, fontweight='bold')
+
+    # Annotate count at end of each bar (skip zeros)
+    for i, v in enumerate(values_count):
+        if v > 0:
+            ax.text(v + max(values_count) * 0.01, i, str(v), va='center', fontsize=9)
+
+    ax.set_xlim(0, max(values_count) * 1.12 if any(v > 0 for v in values_count) else 1)
+    plt.tight_layout()
+    out_count = plot_dir / "aa_count.png"
+    plt.savefig(out_count, dpi=150, bbox_inches='tight')
+    plt.close()
+    logger.info(f"  Plot saved : {out_count.name}")
+
+   
+    #  Plot 2 : H atoms per AA type                                      
+    values_h = [pdb_analyzer.aa_hydrogen_count.get(code, 0) for code in codes_rev]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.barh(labels_rev, values_h, color='darkorange')
+    ax.set_xlabel("Number of H atoms", fontsize=12)
+    ax.set_ylabel("Amino acid", fontsize=12)
+    ax.set_title("Total H atoms per amino acid type", fontsize=13, fontweight='bold')
+
+    for i, v in enumerate(values_h):
+        if v > 0:
+            ax.text(v + max(values_h) * 0.01, i, str(v), va='center', fontsize=9)
+
+    ax.set_xlim(0, max(values_h) * 1.12 if any(v > 0 for v in values_h) else 1)
+    plt.tight_layout()
+    out_h = plot_dir / "aa_hydrogen_count.png"
+    plt.savefig(out_h, dpi=150, bbox_inches='tight')
+    plt.close()
+    logger.info(f"  Plot saved : {out_h.name}")
+
+
+# ============================================================================
 #                       PDB GENERATION
 # ============================================================================
 
@@ -330,18 +453,8 @@ def create_protonated_reference_pdbs(pdb_file: str,
     Create the two default reference PDB files:
       - protonated protein in D2O  (all labile H exchanged via d2o=100)
       - protonated protein in H2O  (no deuteration, d2o=0)
-
-    Reference chromosomes use a 20-element all-False deuteration vector
-    (no non-labile deuteration) because we deliberately want to isolate the
-    effect of D2O exchange.  The vector length must be 20 to match the
-    canonical AMINO_ACIDS list; pdb_deuteration accepts both 18 and 20.
     """
     logger.info(">>> Creating default reference PDBs (protonated in D2O / H2O)")
-    no_restrictions = [True] * len(AMINO_ACIDS)
-
-    # Reference chromosomes use a full-size (20-element) all-False deuteration
-    # vector since no amino-acid-type deuteration is wanted for the references.
-    # We bypass the 18-gene Chromosome class and call PdbDeuteration directly.
     ref_deut_vector = [False] * len(AMINO_ACIDS)   # 20-element, no AA deuteration
 
     # Protonated in D2O (all labile H exchanged)
@@ -378,14 +491,10 @@ def generate_pdbs_for_chromosomes(pdb_file: str,
     """
     Generate one deuterated PDB file per chromosome.
 
-    Each chromosome carries an 18-element deuteration vector (one gene per
-    linked group in EFFECTIVE_AMINO_ACIDS).  Before passing it to
-    PdbDeuteration, we expand it to the 20-element canonical vector so that
-    both amino acids in each linked pair (ASN+ASP, GLU+GLN) are deuterated
-    when their shared gene is True.
-
-    The expansion is handled transparently by pdb_deuteration.apply_deuteration,
-    but we call expand_deuteration_vector() explicitly here for logging clarity.
+    Each chromosome carries an 18-element deuteration vector.  Before passing
+    it to PdbDeuteration, we expand it to the 20-element canonical vector so
+    that both amino acids in each linked pair (ASN+ASP, GLU+GLN) are
+    deuterated when their shared gene is True.
     """
     logger.info(f"Generating {len(chromosomes)} deuterated PDB file(s)…")
     generated = []
@@ -394,10 +503,7 @@ def generate_pdbs_for_chromosomes(pdb_file: str,
         filename = get_pdb_filename(chrom)
         out_path = output_dir / filename
 
-        # Expand 18-gene vector -> 20-element canonical vector before PDB ops.
-        # This ensures ASN & ASP (or GLU & GLN) are both deuterated when their
-        # shared effective gene is True.
-        deut_vector_20 = expand_deuteration_vector(chrom.deuteration)   # NEW
+        deut_vector_20 = expand_deuteration_vector(chrom.deuteration)
 
         try:
             deuterator = PdbDeuteration(pdb_file)
@@ -551,7 +657,7 @@ def cleanup_non_tier1_files(output_dir: Path,
     """
     tier1_stems: Set[str] = {Path(get_pdb_filename(c)).stem for c in tier1_population}
 
-    # --- PDB files ---
+    # PDB files
     removed_pdb = 0
     for pdb in list(output_dir.glob("gen*_Chr*.pdb")):
         if pdb.stem not in tier1_stems:
@@ -562,7 +668,7 @@ def cleanup_non_tier1_files(output_dir: Path,
             except OSError as exc:
                 logger.warning(f"  Could not remove {pdb.name}: {exc}")
 
-    # --- SANS output files ---
+    # SANS output files
     removed_sans = 0
     if primus_dir:
         primus_path = Path(primus_dir)
@@ -628,7 +734,6 @@ def save_population_summary(population: List[Chromosome],
             fh.write(f"Average fitness : {float(np.mean(fitness_values)):.6f}\n")
             fh.write(f"Worst fitness   : {min(fitness_values):.6f}\n")
         fh.write("\n")
-        # Note: 'AA' column = count of deuterated effective genes (max 18)
         fh.write(
             f"{'Rank':<6} {'PDB filename (creation name)':<55} "
             f"{'D2O%':<6} {'AA':<5} {'ratio':<14} {'Fitness':<14} "
@@ -655,15 +760,10 @@ def save_best_fitness_summary(best_chrom: Chromosome,
                                summary_path: Path) -> None:
     """
     Append one row per generation to the best-fitness CSV.
-
-    ``deuterated_aa_list`` now contains the code_3 strings of EFFECTIVE_AMINO_ACIDS
-    (e.g. "ASN+ASP" for the linked pair) rather than individual canonical AAs.
-    This preserves the information that both members of the pair are deuterated.
     """
-    # Use EFFECTIVE_AMINO_ACIDS codes so linked pairs appear as "ASN+ASP" / "GLU+GLN"
     deut_aas = [
         EFFECTIVE_AMINO_ACIDS[i].code_3
-        for i, d in enumerate(chrom.deuteration if False else best_chrom.deuteration)
+        for i, d in enumerate(best_chrom.deuteration)
         if d
     ]
     deut_str = ";".join(deut_aas) if deut_aas else "none"
@@ -809,6 +909,43 @@ def main():
         np.random.seed(cfg["seed"])
         logger.info(f"Random seed set to: {cfg['seed']}")
 
+    # ---------- Validate input files ----------
+    pdb_path = Path(cfg['pdb_file'])
+    if not pdb_path.exists():
+        logger.error(f"PDB file not found: {pdb_path}")
+        sys.exit(1)
+    if not Path(cfg['batch_script']).exists():
+        logger.error(f"Batch script not found: {cfg['batch_script']}")
+        sys.exit(1)
+
+    # ---------- Analyse PDB composition BEFORE creating population ----------
+    logger.info("=" * 70)
+    logger.info(">>> Analysing protein composition")
+    logger.info("=" * 70)
+    try:
+        pdb_analyzer = PdbDeuteration(str(pdb_path))
+    except (FileNotFoundError, RuntimeError) as exc:
+        logger.error(f"PDB analysis failed: {exc}")
+        sys.exit(1)
+
+    total_residues = sum(pdb_analyzer.aa_count.values())
+    total_h        = sum(pdb_analyzer.aa_hydrogen_count.values())
+    logger.info(f"  Total residues  : {total_residues}")
+    logger.info(f"  Total H atoms   : {total_h}")
+
+    if pdb_analyzer.missing_aa:
+        logger.info(
+            f"  Absent AAs ({len(pdb_analyzer.missing_aa)}): "
+            + ", ".join(pdb_analyzer.missing_aa)
+        )
+    else:
+        logger.info("  All 20 standard amino acid types are present")
+
+    # Update restrictions: disable effective genes for fully absent AAs
+    cfg['restrictions'] = apply_missing_aa_to_restrictions(
+        cfg['restrictions'], pdb_analyzer.missing_aa
+    )
+
     # ---------- Display configuration ----------
     logger.info("=" * 70)
     logger.info("                SANS DEUTERATION OPTIMISATION")
@@ -824,25 +961,21 @@ def main():
     logger.info(f"Q max (fitness)      : {cfg['q_max']} Å⁻¹")
     logger.info(f"Ratio threshold      : {cfg['ratio_threshold']}")
     logger.info(f"Effective gene count : {N_EFFECTIVE_AA}  "
-                f"(ASN+ASP linked, GLU+GLN linked)")   # NEW info line
+                f"(ASN+ASP linked, GLU+GLN linked)")
     logger.info(f"Default references   : "
                 f"{'no' if cfg.get('no_default_ref') else 'yes (protonated in D2O / H2O)'}")
     if cfg.get("ref"):
         logger.info(f"Extra references     : {cfg['ref']}")
     logger.info("=" * 70)
 
-    # ---------- Validate input files ----------
-    pdb_path = Path(cfg['pdb_file'])
-    if not pdb_path.exists():
-        logger.error(f"PDB file not found: {pdb_path}")
-        sys.exit(1)
-    if not Path(cfg['batch_script']).exists():
-        logger.error(f"Batch script not found: {cfg['batch_script']}")
-        sys.exit(1)
-
     # ---------- Create output directories ----------
     output_dir, ref_dir = create_output_directory(cfg['output_dir'], str(pdb_path))
     best_summary_path = output_dir / "best_fitness_summary.csv"
+
+    # ---------- Generate protein composition plots ----------
+    plot_dir = output_dir / "plot"
+    logger.info(">>> Generating protein composition plots")
+    generate_protein_plots(pdb_analyzer, plot_dir)
 
     # Create default references unless --no_default_ref
     if not cfg.get("no_default_ref"):
@@ -855,7 +988,7 @@ def main():
     # ---------- Initialise population generator ----------
     generator = PopulationGenerator(
         aa_list=EFFECTIVE_AMINO_ACIDS,        # 18 effective genes
-        modifiable=cfg['restrictions'],        # 18-element list
+        modifiable=cfg['restrictions'],        # 18-element list (missing AAs already disabled)
         population_size=cfg['population_size'],
         elitism=cfg['elitism'],
         d2o_variation_rate=cfg['d2o_variation_rate'],
